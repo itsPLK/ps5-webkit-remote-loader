@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <title>PS5 WebKit Remote Loader v[[VERSION_PLACEHOLDER]] by PLK (built [[BUILD_TIME_PLACEHOLDER]])</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    html, body {
+      background: #090b10;
+      color: #e6edf3;
+      height: 100%;
+      width: 100%;
+      overflow: hidden;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+    #console {
+      height: 100vh;
+      width: 100vw;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: #040508;
+      padding: 16px;
+      font-size: 13.5px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    #console::-webkit-scrollbar {
+      width: 8px;
+    }
+    #console::-webkit-scrollbar-track {
+      background: #06070a;
+    }
+    #console::-webkit-scrollbar-thumb {
+      background: #21262d;
+      border-radius: 4px;
+    }
+    #console::-webkit-scrollbar-thumb:hover {
+      background: #30363d;
+    }
+    .log-line {
+      margin: 1px 0;
+    }
+    .log-setup { color: #ffffff; }
+    .log-success, .log-plus { color: #3fb950; }
+    .log-error, .log-minus { color: #f85149; font-weight: bold; }
+    .log-info, .log-cyan, .log-star { color: #39c5bb; }
+    .log-warn { color: #d29922; }
+    .log-log { color: #39c5bb; }
+
+    /* Remote-loader only */
+    #console { padding-right: 200px; }
+    /* Top-Right Minimal HUD */
+    #hud {
+      position: fixed;
+      top: 14px;
+      right: 18px;
+      background: rgba(13, 17, 23, 0.88);
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 8px 14px;
+      z-index: 1000;
+      font-size: 13px;
+      text-align: right;
+      line-height: 1.45;
+      pointer-events: none;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    }
+    #hud-addr {
+      color: #58a6ff;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+    }
+    #hud-fw {
+      color: #8b949e;
+      font-size: 12px;
+    }
+
+    @media (max-width: 600px) {
+      #console { padding-right: 16px; }
+      #hud { position: static; width: auto; border-radius: 0; text-align: left; }
+    }
+    /* End remote-loader only */
+  </style>
+</head>
+<body>
+  <div id="console"></div>
+
+  <!-- Remote-loader only -->
+  <div id="hud">
+    <div id="hud-addr">127.0.0.1:9027</div>
+    <div id="hud-fw">FW --</div>
+  </div>
+  <!-- End remote-loader only -->
+
+  <script src="./src/firmware.js"></script>
+  <script src="./src/main.js"></script>
+  <script src="./src/rop.js"></script>
+  <script src="./src/utils/syscalls.js"></script>
+  <script type="module" src="./src/site.js"></script>
+</body>
+</html>

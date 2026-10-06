@@ -1,0 +1,337 @@
+// Offline poops port checks.
+{
+function findSlopkitUpstream() {
+  const candidates = [
+    process.env.SLOPKIT_DIR,
+    join(ROOT, "slopkit"),
+    join(ROOT, "build/slopkit"),
+    join(ROOT, "third_party/slopkit"),
+    join(ROOT, ".for_reference/slopkit"),
+    join(ROOT, "..", "slopkit"),
+  ].filter(Boolean);
+
+  for (const c of candidates) {
+    if (existsSync(join(c, "poops.js")) && existsSync(join(c, "rop.js"))) return c;
+    const sub = join(c, "slopkit");
+    if (existsSync(join(sub, "poops.js")) && existsSync(join(sub, "rop.js"))) return sub;
+  }
+  return null;
+}
+
+const PAYLOAD_POOPS = join(ROOT, "payloads/poops.js");
+const REF_SLOPKIT = findSlopkitUpstream();
+const havePoopsUpstream = !!REF_SLOPKIT;
+const poopsSrc = readFileSync(PAYLOAD_POOPS, "utf8");
+
+function portRegion(src, label) {
+  const start = new RegExp(`^// =+ PORT BOUNDARY: ${label} starts here =+.*\\n`, "m").exec(src);
+  const end = new RegExp(`^// =+ PORT BOUNDARY: ${label} ends here =+\\n`, "m").exec(src);
+  if (!start || !end || end.index <= start.index + start[0].length) return null;
+  return src.slice(start.index + start[0].length, end.index);
+}
+
+// 14a. Fidelity ----------------------------------------------------------------
+if (!havePoopsUpstream) {
+  console.log("  (skipping poops fidelity: slopkit repository is not present)");
+} else {
+  const upstreamPoops = readFileSync(join(REF_SLOPKIT, "poops.js"), "utf8");
+  const upstreamRop = readFileSync(join(REF_SLOPKIT, "rop.js"), "utf8");
+
+  // --- the poops.js region ----------------------------------------------------
+  let region = portRegion(poopsSrc, "upstream poops\\.js");
+  check("payloads/poops.js marks the ported poops.js region", region !== null);
+
+  // E1: `export ` was stripped. The reverse is driven by UPSTREAM's export list
+  // rather than a hardcoded one, so an export added by a rebase is picked up
+  // instead of being left un-exported and silently absorbed.
+  const exportedNames = new Set(
+    [...upstreamPoops.matchAll(/^export (?:const|function) ([A-Za-z_$][\w$]*)/gm)].map((m) => m[1]));
+  check("upstream poops.js declares 25 exports", exportedNames.size === 25,
+    `found ${exportedNames.size}`);
+  let e1 = 0;
+  region = region.split("\n").map((line) => {
+    const m = /^(const|function) ([A-Za-z_$][\w$]*)/.exec(line);
+    if (m && exportedNames.has(m[2])) { e1++; return `export ${line}`; }
+    return line;
+  }).join("\n");
+  check("E1: `export` was stripped from exactly the upstream exports",
+    e1 === exportedNames.size,
+    `reversed ${e1} of ${exportedNames.size}; a mismatch means the port added or dropped a declaration`);
+  check("payloads/poops.js has no `export` left in the ported region",
+    !/^export /m.test(region), "the payload is run by indirect eval, where `export` is a syntax error");
+
+  const portBlock = (id) => new RegExp(
+    `^  // >>> poops port ${id}:[^\\n]*\\n[\\s\\S]*?^  // >>> poops port ${id} end\\n`, "m");
+  const tail = (body) => body.replace(/\n+$/, "") + "\n";
+  const slice = (src, from, to) => tail(src.slice(src.indexOf(from), src.indexOf(to)));
+
+  const afterE2 = region.replace(portBlock("E2"), () => slice(upstreamPoops,
+    "  async function fetchInto(url, sink) {", "  function unpin(buf, why) {"));
+  check("E2: the fetchInto block is present and was replaced", afterE2 !== region,
+    "no `poops port E2` block found; the fetch helper is still in the payload");
+
+  const afterE3 = afterE2.replace(portBlock("E3"), () => slice(upstreamPoops,
+    "  async function stage5Body(opts) {", "\n  return {\n    PK,"));
+  check("E3: the stage5Body block is present and was replaced", afterE3 !== afterE2,
+    "no `poops port E3` block found; stage 5 is still upstream's");
+
+  const afterE4 = afterE3.replace("    latch,\n    launchKexp,\n  } = X;", "    latch,\n  } = X;");
+  check("E4: launchKexp is read from the context and was added", afterE4 !== afterE3,
+    "makePoopsEngine no longer destructures launchKexp, so the replacement cannot call it");
+
+  check("payloads/poops.js is upstream poops.js, unmodified",
+    afterE4 === upstreamPoops, firstDifference(afterE4, upstreamPoops));
+
+  // E5 asserts the ABSENCE of an edit -- thread_rop is reached, not changed --
+  // so there is nothing to reverse and it is checked as a fact instead.
+  const threadAt = poopsSrc.indexOf("class thread_rop");
+  check("E5: thread_rop comes from the ported rop region, not a second definition",
+    threadAt >= 0 && threadAt < poopsSrc.indexOf("PORT BOUNDARY: upstream poops.js starts"),
+    (poopsSrc.match(/^\s*class thread_rop.*$/m) || ["(none)"])[0]);
+  check("worker_rop is not redefined by the payload",
+    !/^\s*class worker_rop/m.test(poopsSrc),
+    "the payload must use the loader's worker_rop through api.chain");
+
+  // --- the rop.js region ------------------------------------------------------
+  let rop = portRegion(poopsSrc, "slopkit rop\\.js");
+  check("payloads/poops.js marks the ported rop.js region", rop !== null);
+
+  const ropLines = upstreamRop.split("\n");
+  const ropAt = (prefix) => ropLines.findIndex((l) => l.startsWith(prefix));
+  const iRop = ropAt("class rop"), iWorker = ropAt("class worker_rop"), iThread = ropAt("class thread_rop");
+  check("upstream rop.js has the three classes the port indexes",
+    iRop >= 0 && iRop < iWorker && iWorker < iThread,
+    `rop=${iRop} worker_rop=${iWorker} thread_rop=${iThread}`);
+
+  let expectRop = "";
+  if (iRop >= 0 && iWorker >= 0 && iThread >= 0) {
+    // worker_rop is dropped on purpose -- the loader has one -- so the expected
+    // region is the base class, then thread_rop, with the blank line that used to
+    // separate them.
+    expectRop = ropLines.slice(iRop, iWorker).join("\n").replace(/\s+$/, "") + "\n\n" +
+      ropLines.slice(iThread).join("\n").replace(/\s+$/, "") + "\n";
+  }
+  // The four rewrites, matched by exact text. alert() is a blocking modal on the
+  // PS5's WebKit page: from a payload it freezes the thread that owns the only
+  // hijacked worker, and the console needs a power-off. A throw reports the same
+  // condition and the ladder runner catches it.
+  const ALERT_REWRITES = [
+    [`alert("you're trying to write a value exceeding 32-bits without using a int64 instance");`,
+      `throw new Error("rop: value exceeds 32 bits and was not an int64 instance");`],
+    [`alert("You're trying to write a non number/non int64 value?");`,
+      `throw new Error("rop: pushed a value that is neither a number nor an int64");`],
+    [`alert("Unsupported target register: " + target_reg);`,
+      `throw new Error("rop: unsupported target register: " + target_reg);`],
+    [`alert("illegal branch type.");`,
+      `throw new Error("rop: illegal branch type " + type);`],
+  ];
+  for (const [from, to] of ALERT_REWRITES) {
+    check(`rop region rewrites ${from.slice(0, 32)}... into a throw`, expectRop.includes(from));
+    expectRop = expectRop.replace(from, to);
+  }
+  check("payloads/poops.js has no alert() left in the ported rop region",
+    rop !== null && !/alert\(/.test(rop), (rop.match(/.*alert\(.*/) || [""])[0]);
+  check("payloads/poops.js's rop region is upstream rop.js, unmodified",
+    rop === expectRop, firstDifference(rop, expectRop));
+}
+
+// 14b. Source-level regression guards
+{
+  // Comments stripped: the header explains all of this in prose, and quoting the
+  // API names there would make these checks match themselves.
+  const code = poopsSrc.replace(/^\s*\/\/.*$/gm, "");
+
+  check("payloads/poops.js contains no fetch of its own",
+    !/\bfetch\s*\(/.test(code), (code.match(/.*\bfetch\s*\(.*/) || [""])[0]);
+  check("payloads/poops.js has no XMLHttpRequest, Worker, import or require",
+    !/XMLHttpRequest|new Worker|await import\(|\brequire\(/.test(code),
+    (code.match(/.*(XMLHttpRequest|new Worker|await import\(|require\().*/) || [""])[0]);
+  check("no api.module() call, so the payload is one self-contained file",
+    !/api\.module\(/.test(code));
+
+  // The prefetch must precede the ladder, and be the payload's own straight-line
+  // code. A line-order check alone cannot tell the difference, because the
+  // launchKexp closure stage 5 calls is textually earlier -- what makes a prefetch
+  // inside it wrong is WHEN it runs, during the exploit, with the worker committed.
+  const codeLines = code.split("\n");
+  check("payloads/poops.js prefetches exactly once",
+    codeLines.filter((l) => /\bapi\.prefetchKexp\s*\(/.test(l)).length === 1,
+    `${codeLines.filter((l) => /\bapi\.prefetchKexp\s*\(/.test(l)).length} call sites`);
+
+  const atPrefetch = poopsSrc.indexOf("await api.prefetchKexp()");
+  const atLadder = poopsSrc.indexOf("await runLadder(ctx, engine)");
+  const atHook = poopsSrc.indexOf("const launchKexp = async (options) =>");
+  check("the prefetch precedes the ladder run",
+    atPrefetch !== -1 && atLadder !== -1 && atPrefetch < atLadder,
+    atLadder === -1 ? "no runLadder call found" : `prefetch at ${atPrefetch}, runLadder at ${atLadder}`);
+  check("the prefetch precedes the launchKexp hook that stage 5 calls",
+    atPrefetch !== -1 && atHook !== -1 && atPrefetch < atHook,
+    atHook === -1 ? "no launchKexp closure found" : `prefetch at ${atPrefetch}, hook at ${atHook}`);
+
+  // The replaced stage5Body delegates and nothing else: no mapping, no spawning,
+  // no private API table. Those are exactly the jobs api.launchKexp() does, and
+  // doing them twice would be two jitshm_create mappings of the same shellcode.
+  check("the replacement stage5Body delegates to launchKexp and maps nothing itself",
+    /await launchKexp\(\{/.test(code) &&
+    !/sys\(PSYS\.JITSHM_CREATE/.test(code) &&
+    !/sys\(PSYS\.MMAP/.test(code) &&
+    !/apiTable/.test(code),
+    "stage 5 still maps or builds an API table itself");
+
+  // krw rides the crossed pipe pair the cleanup closes, so its accessors are
+  // disabled rather than left to fault the worker the loader shares.
+  check("api.krw is published with its accessors disabled",
+    /api\.krw = disarmKrw\(/.test(code) && /function disarmKrw/.test(code) && /DISABLED/.test(poopsSrc));
+
+  // One-shot latch: the refusal, and the recovery it names.
+  check("the payload refuses to run twice while the latch is held",
+    /poops-latch/.test(poopsSrc) && /latch-clear/.test(poopsSrc) && /REBOOT the console/.test(poopsSrc),
+    "the latch exists but the refusal, the reason, or the recovery is missing");
+
+  // --- the loader change the port depends on ----------------------------------
+  //
+  // api.chain must expose the geometry the facade needs to predict fcall()'s
+  // alignment padding. Without it the payload refuses at startup rather than
+  // guessing, which is the right behaviour, but it would refuse forever.
+  const loaderSrc = readFileSync(join(ROOT, "src/loader.js"), "utf8");
+  const gatedBody = loaderSrc.slice(
+    loaderSrc.indexOf("function gatedChain()"),
+    loaderSrc.indexOf("async function sendBlob"));
+  const gatedApi = gatedBody.slice(gatedBody.indexOf("const api = {"));
+  check("api.chain exposes stack_entry_point, or the payload cannot run",
+    /get stack_entry_point\(\)/.test(gatedBody),
+    "gatedChain() no longer forwards stack_entry_point");
+  check("api.chain exposes the geometry the capacity check needs",
+    /get stack_size\(\)/.test(gatedBody) &&
+    /get reserved_stack\(\)/.test(gatedBody) &&
+    /get initial_count\(\)/.test(gatedBody),
+    "stack_size / reserved_stack / initial_count are not all forwarded");
+  // The forwardings must stay reads. A writable one would hand a payload a way to
+  // execute outside the gate, which is the single property api.chain exists for.
+  const forwarded = [...gatedApi.matchAll(/get (\w+)\(\)/g)].map((m) => m[1]);
+  check("the geometry additions to api.chain are getters only",
+    ["stack_entry_point", "stack_size", "reserved_stack", "initial_count"]
+      .every((n) => forwarded.includes(n)),
+    `forwarded getters: ${forwarded.join(", ")}`);
+  check("api.chain gains no writable property for the payload",
+    !/\b(stack_entry_point|stack_size|reserved_stack|initial_count)\s*[:,(]/.test(gatedApi),
+    "one of the forwarded properties is settable, which would bypass the gate");
+
+  // PROLOGUE_SLOTS must match what pre_chain() actually pushes: poops' assertFresh()
+  // compares count against initial_count + 3, so if prepareChain's length changes,
+  // every batched call in the exploit throws "chain not fresh" at runtime.
+  const mainSrc = readFileSync(join(ROOT, "src/main.js"), "utf8");
+  const preChain = mainSrc.slice(
+    mainSrc.indexOf("function prepareChain(chain)"),
+    mainSrc.indexOf("function launchChainDetached"));
+  const preChainPushes = (preChain.match(/chain\.push\(/g) || []).length;
+  const declaredSlots = /const PROLOGUE_SLOTS = (\d+);/.exec(poopsSrc);
+  check("the payload's PROLOGUE_SLOTS matches the loader's pre_chain()",
+    declaredSlots !== null && preChainPushes === Number(declaredSlots[1]),
+    `prepareChain pushes ${preChainPushes}, the payload declares ${declaredSlots ? declaredSlots[1] : "nothing"}`);
+
+  check("payloads/poops.js never sets api.allowXotextReads",
+    !/allowXotextReads/.test(code));
+
+  // Firmware coverage, measured against the real offset tables rather than a
+  // hardcoded list, so a new offsets/*.js is checked instead of skipped.
+  const REQUIRED_GADGETS = ["ret", "pop rdi", "pop rsi", "pop rdx", "pop rcx",
+    "pop rax", "pop rsp", "pop r8", "pop r9", "mov [rdi], rsi", "mov [rdi], rax",
+    "mov [rdi], eax", "mov rax, [rax]", "inc dword [rax]"];
+  const REQUIRED_OFFSETS = ["OFFSET_lk_sceKernelGetCurrentCpu",
+    "OFFSET_lk_pthread_exit", "OFFSET_lk_pthread_create_name_np",
+    "OFFSET_lk_pthread_join", "OFFSET_lc_longjmp"];
+  const offsetDir = join(ROOT, "offsets");
+  const profiles = existsSync(offsetDir) ? readdirSync(offsetDir).filter((f) => f.endsWith(".js")) : [];
+  const shortGadgets = [], shortOffsets = [];
+  for (const f of profiles) {
+    const text = readFileSync(join(offsetDir, f), "utf8");
+    const missing = REQUIRED_GADGETS.filter((g) => !text.includes(`"${g}":`));
+    if (missing.length) shortGadgets.push(`${f}: ${missing.join(", ")}`);
+    const off = REQUIRED_OFFSETS.filter(
+      (o) => !new RegExp(`^const ${o}\\s*=\\s*0x`, "m").test(text));
+    if (off.length) shortOffsets.push(`${f}: ${off.join(", ")}`);
+  }
+  check("the payload's preflight gadget list covers every gadget the port needs",
+    REQUIRED_GADGETS.every((g) => poopsSrc.includes(`"${g}"`)),
+    `absent from the payload: ${REQUIRED_GADGETS.filter((g) => !poopsSrc.includes(`"${g}"`)).join(", ")}`);
+  check("no offsets profile is short on the gadgets this payload needs",
+    shortGadgets.length === 0, shortGadgets.join(" | "));
+  check("no offsets profile is short on the thread offsets rop.js needs",
+    shortOffsets.length === 0, shortOffsets.join(" | "));
+  check("the payload is within the loader's 512 KiB payload limit",
+    Buffer.byteLength(poopsSrc) <= 512 * 1024,
+    `${Buffer.byteLength(poopsSrc)} bytes`);
+}
+
+// 14c. Behavioural smoke run
+{
+  // Two globals the payload expects from the page and node does not have. The
+  // loader publishes int64; sessionStorage backs the latch.
+  await import(pathToFileURL(join(ROOT, "src/utils/int64.js")).href);
+  check("int64 reaches the global scope, as src/utils/int64.js leaves it",
+    vm.runInThisContext("typeof globalThis.int64 === 'function'"));
+  const latchStore = new Map();
+  globalThis.sessionStorage = {
+    getItem: (k) => (latchStore.has(k) ? latchStore.get(k) : null),
+    setItem: (k, v) => { latchStore.set(k, String(v)); },
+    removeItem: (k) => { latchStore.delete(k); },
+  };
+
+  // Both binaries must prefetch, so the run reaches the ladder rather than
+  // failing at the prefetch guard. Asserted, not assumed.
+  const timeline = [];
+  const poopsWire = await withFetch(async (url) => {
+    timeline.push(String(url));
+    const isElf = String(url).includes("elfldr");
+    return { ok: true, arrayBuffer: async () => fakeElf(isElf ? 0x1000 : 0x800) };
+  }, async () => runSequence([{ src: poopsSrc }], { fakeOpts: { chainAuthoring: true } }));
+
+  const wire = poopsWire.wire;
+  check("poops prefetches both binaries and says so before anything else",
+    timeline.length === 2 &&
+    wire.includes("prefetched") && wire.includes("bytes"),
+    `${timeline.length} fetch(es): ${timeline.join(", ")}`);
+
+  check("poops announces the firmware and the offsets table it is using",
+    /poops on fw 9\.99/.test(wire) && /offsets\/9\.99\.js/.test(wire),
+    (wire.match(/\[.\] poops on fw[^\n]*/) || [""])[0]);
+
+  // The chain facade is the load-bearing piece of the adapter. It has to survive
+  // constructing itself, which means reading the gated chain's geometry and
+  // checking the gadget table -- neither of which the fake would otherwise touch.
+  check("the payload gets past its own setup into the ladder",
+    /ladder:/.test(wire) || /setup refused/.test(wire) || /the ladder threw/.test(wire),
+    (wire.match(/\[.\] (ladder|setup refused|the ladder threw)[^\n]*/) || [""])[0]);
+
+  // The one-shot latch, both halves. This is the behaviour that has to be right
+  // because it is the difference between a repeatable session and a panic.
+  check("a first run leaves the latch clear enough to report its verdict",
+    !/the poops latch is already held/.test(wire));
+  const second = await withFetch(async () => ({
+    ok: true, arrayBuffer: async () => fakeElf(0x1000),
+  }), async () => runSequence([{ src: poopsSrc }], { fakeOpts: { chainAuthoring: true } }));
+  check("a second run in the same session is refused, with the reason and the fix",
+    /the poops latch is already held/.test(second.wire) &&
+    /REBOOT the console/.test(second.wire) &&
+    /latch-clear/.test(second.wire),
+    (second.wire.match(/\[.\] the poops latch[^\n]*/) || [""])[0]);
+  check("the refusal happens before the prefetch, so nothing is fetched",
+    second.wire.indexOf("the poops latch is already held") < second.wire.indexOf("prefetched"),
+    "the second run fetched before refusing");
+  check("--arg latch-clear re-arms the session",
+    await withFetch(async () => ({ ok: true, arrayBuffer: async () => fakeElf(0x1000) }),
+      async () => (await runSequence([{ src: poopsSrc, argv: ["latch-clear"] }],
+        { fakeOpts: { chainAuthoring: true } })).wire).includes("latch cleared on request"));
+
+  // krw must not be published off a failed run. On the fake the ladder never
+  // reaches stage 4, so there is no handle -- and publishing one would make
+  // --status report a jailbreak that did not happen.
+  check("a run that never reached stage 5 publishes no krw handle",
+    /no krw handle to publish/.test(wire),
+    (wire.match(/\[.\] (api\.krw|no krw)[^\n]*/) || [""])[0]);
+
+  check("the payload returned without the loader reporting a throw",
+    /--- payload done ---/.test(wire) && !/payload threw/.test(wire),
+    (wire.match(/\[.\] payload threw[^\n]*/) || [""])[0]);
+}

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WebKit Remote Loader v[[VERSION_PLACEHOLDER]] by PLK (built [[BUILD_TIME_PLACEHOLDER]])</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    html, body {
+      height: 100%;
+      background: #060606;
+      color: #e2e8f0;
+      font-family: -apple-system, system-ui, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+    }
+    p {
+      font-size: 1.25rem;
+      color: #94a3b8;
+    }
+    p.bad {
+      color: #ef4444;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <p id="status">Loading Remote Loader&hellip;</p>
+  </main>
+  <script>
+    (function () {
+      'use strict';
+      var dir = '[[APP_DIR_PLACEHOLDER]]';
+      var version = '[[VERSION_PLACEHOLDER]]';
+      var statusEl = document.getElementById('status');
+
+      function fail() {
+        statusEl.textContent = 'Cache incomplete - please re-run the installer.';
+        statusEl.className = 'bad';
+      }
+
+      fetch('/app/' + dir + '/__complete__')
+        .then(function (r) { return r.text(); })
+        .then(function (t) {
+          if (t.trim() === version) {
+            window.location.replace('/app/' + dir + '/index.html');
+          } else {
+            fail();
+          }
+        })
+        .catch(fail);
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+__pycache__/
+*.pyc
+.DS_Store
+.for_reference/
+
+# Build artifacts
+installer/dist/
+installer/include/file_registry.h
+installer/include/file_registry.c
+installer/include/.file_registry.stamp
+installer/include/wkrli_version.h
+installer/include/wkrl_version.h
+installer/assets/param.json
+installer/assets/icon0.png
+installer/assets/icon.ico
+*.elf
+installer.elf
+webkit-remote-loader-installer_v*.elf
+webkit-remote-loader-host.py
+webkit-remote-loader-host_v*.py
+dist/
+build/
+*.spec
+
+# Local klog/payload captures from console runs (see RELAPSE-INVESTIGATION.md).
+# These are per-run diagnostics, not repo content, and several are large.
+logs/

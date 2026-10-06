@@ -1,0 +1,176 @@
+name: Pre-Release On-Demand
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to build from'
+        type: string
+        required: false
+        default: dev
+      custom_version:
+        description: 'Optional custom version suffix (e.g. test1 -> 0.1.0-test1). Leave blank for auto pre-release tag.'
+        type: string
+        required: false
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    env:
+      BUILD_TYPE: pre-release
+      CUSTOM_VERSION: ${{ inputs.custom_version }}
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      full_version: ${{ steps.version.outputs.full_version }}
+      sha: ${{ steps.version.outputs.sha }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+          fetch-depth: 0
+
+      - name: Extract Version
+        id: version
+        run: |
+          FULL=$(python3 tools/gen_version.py --print)
+          BASE=$(python3 -c "import tools.gen_version as g; print(g.read_base_version())")
+          echo "Full version: $FULL"
+          echo "version=${BASE}" >> $GITHUB_OUTPUT
+          echo "full_version=${FULL}" >> $GITHUB_OUTPUT
+          echo "tag=v${FULL}" >> $GITHUB_OUTPUT
+          echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Check if release exists
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists. Aborting."
+            exit 1
+          fi
+          echo "Release $TAG does not exist. Proceeding."
+
+      - name: Build Remote Loader Installer ELF & Host Script
+        run: |
+          chmod +x build_release.sh
+          ./build_release.sh
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: |
+            webkit-remote-loader-installer_v*.elf
+            webkit-remote-loader-host_v*.py
+            installer/assets/icon.ico
+          retention-days: 1
+
+  build-windows:
+    needs: build-linux
+    runs-on: windows-latest
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Download Linux Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-build
+          path: .
+
+      - name: Build Windows Executable
+        run: pyinstaller --onefile --noconfirm --icon installer/assets/icon.ico --name webkit-remote-loader-host_v${{ needs.build-linux.outputs.full_version }} "webkit-remote-loader-host_v${{ needs.build-linux.outputs.full_version }}.py"
+
+      - name: Upload Windows Executable Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: dist/webkit-remote-loader-host_v*.exe
+          retention-days: 1
+
+  create-release:
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository (for git history)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+          fetch-depth: 0
+
+      - name: Download Linux Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-build
+          path: .
+
+      - name: Download Windows Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-build
+          path: .
+
+      - name: Create Pre-Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.build-linux.outputs.tag }}"
+          FULL="${{ needs.build-linux.outputs.full_version }}"
+          SHA="${{ needs.build-linux.outputs.sha }}"
+          REPO="${{ github.repository }}"
+
+          ELF="webkit-remote-loader-installer_v${FULL}.elf"
+          PY="webkit-remote-loader-host_v${FULL}.py"
+          EXE="webkit-remote-loader-host_v${FULL}.exe"
+          if [ -f "dist/${EXE}" ]; then
+            mv "dist/${EXE}" .
+          fi
+
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            CHANGELOG="**Full Changelog** (since [${PREV_TAG}](https://github.com/${REPO}/releases/tag/${PREV_TAG})): https://github.com/${REPO}/compare/${PREV_TAG}...${TAG}"
+          else
+            CHANGELOG="First Release."
+          fi
+
+          cat > release_body.md <<EOF
+          > [!WARNING]
+          > This is a **pre-release / test build** from branch \`${{ inputs.branch }}\`.
+
+          ## PS5 WebKit Remote Loader v${FULL} (Pre-Release)
+
+          A lightweight standalone remote payload loader for the PS5 system browser, running in WebKit userland with **no kernel exploit required**.
+
+          ### Downloads
+
+          | Platform | File | Description |
+          |---|---|---|
+          | **PS5** (installer payload) | [${ELF}](https://github.com/${REPO}/releases/download/${TAG}/${ELF}) | Native ELF payload to cache and install the Remote Loader homescreen app |
+          | **Linux / macOS / WSL** | [${PY}](https://github.com/${REPO}/releases/download/${TAG}/${PY}) | Standalone PC host script (DNS + HTTPS server) |
+          | **Windows** | [${EXE}](https://github.com/${REPO}/releases/download/${TAG}/${EXE}) | Standalone PC host executable (DNS + HTTPS server) |
+
+          ### Licensing
+          - **Remote Loader Application & PC Host:** [MIT License](https://github.com/${REPO}/blob/dev/LICENSE)
+          - **Installer ELF:** Licensed under [GNU General Public License v3.0 (GPLv3)](https://www.gnu.org/licenses/gpl-3.0.html) as it incorporates components from \`ps5-webkit-autoloader\` and links against \`ps5-payload-sdk\` / \`libmicrohttpd\`.
+
+          ---
+          ${CHANGELOG}
+          EOF
+
+          gh release create "$TAG" \
+            --prerelease \
+            --target "$SHA" \
+            --title "$TAG (pre-release)" \
+            --notes-file release_body.md \
+            "$ELF" "$PY" "$EXE"

@@ -18,6 +18,8 @@ const OFFSET_lk_pthread_create = 0x00020b50;
 const OFFSET_lk_pthread_create_name_np = 0x00021200;
 const OFFSET_lk_pthread_join = 0x00022310;
 const OFFSET_lk_pthread_exit = 0x00021590;
+const OFFSET_lk_sleep = 0x00027890;
+const OFFSET_lk_sceKernelGetCurrentCpu = 0x000011f0;
 
 const OFFSET_lk_scePthreadCreate = 0x00007840;
 const OFFSET_lk_scePthreadJoin = 0x0000b210;
@@ -38,8 +40,8 @@ const OFFSET_lc_longjmp = 0x0005ad80;
 
 const OFFSET_WORKER_STACK_OFFSET = 0x0007fb68;
 
-const wk_gadgetmap = {
-  ret: 0x000000c7,
+let wk_gadgetmap = {
+  "ret": 0x000000c7,
   "pop rdi": 0x0004575b,
   "pop rsi": 0x00045a94,
   "pop rdx": 0x00010f32,
@@ -64,10 +66,10 @@ const wk_gadgetmap = {
   "shl rax, 4": 0x00d759c2,
   "shr rax, 3": 0x00d68341,
   "shr rax, 4": 0x01b6c0d3,
-  infloop: 0x000031c1,
+  "infloop": 0x000031c1,
 };
 
-const syscall_map = {
+let syscall_map = {
   0x001: 0x0001b53a,
   0x002: 0x0001cf40,
   0x003: 0x0001b100,

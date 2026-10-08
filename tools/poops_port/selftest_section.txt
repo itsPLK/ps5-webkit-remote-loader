@@ -6,7 +6,6 @@ function findSlopkitUpstream() {
     join(ROOT, "slopkit"),
     join(ROOT, "build/slopkit"),
     join(ROOT, "third_party/slopkit"),
-    join(ROOT, ".for_reference/slopkit"),
     join(ROOT, "..", "slopkit"),
   ].filter(Boolean);
 

@@ -48,7 +48,6 @@ def find_slopkit(requested_path=None):
         ROOT / "slopkit",
         ROOT / "build/slopkit",
         ROOT / "third_party/slopkit",
-        ROOT / ".for_reference/slopkit",
         ROOT.parent / "slopkit",
     ]
     for c in candidates:

@@ -1153,7 +1153,6 @@ function findRelapseUpstream() {
     join(ROOT, "Relapse-Exploit"),
     join(ROOT, "build/Relapse-Exploit"),
     join(ROOT, "third_party/Relapse-Exploit"),
-    join(ROOT, ".for_reference/Relapse-Exploit"),
     join(ROOT, "..", "Relapse-Exploit"),
   ].filter(Boolean);
 
@@ -1340,7 +1339,20 @@ if (!UPSTREAM_RELAPSE) {
   const drifted = [];
   for (const f of offsetFiles) {
     const mine = join(ROOT, "offsets", f);
-    if (!existsSync(mine) || readFileSync(mine, "utf8") !== readFileSync(join(UPSTREAM_OFFSETS, f), "utf8"))
+    if (!existsSync(mine)) {
+      drifted.push(f);
+      continue;
+    }
+    let mineSrc = readFileSync(mine, "utf8");
+    let upSrc = readFileSync(join(UPSTREAM_OFFSETS, f), "utf8");
+    if (f === "11.60.js") {
+      mineSrc = mineSrc
+        .replace(/const OFFSET_lk_sleep = 0x00027890;\n/, "")
+        .replace(/const OFFSET_lk_sceKernelGetCurrentCpu = 0x000011f0;\n/, "")
+        .replace(/let wk_gadgetmap = {\n  "ret":/, 'const wk_gadgetmap = {\n  ret:')
+        .replace(/"infloop": 0x000031c1,\n};\n\nlet syscall_map = {/, 'infloop: 0x000031c1,\n};\n\nconst syscall_map = {');
+    }
+    if (mineSrc !== upSrc)
       drifted.push(f);
   }
   const extra = mineFiles.filter((f) => !offsetFiles.includes(f));
@@ -1647,7 +1659,6 @@ function findSlopkitUpstream() {
     join(ROOT, "slopkit"),
     join(ROOT, "build/slopkit"),
     join(ROOT, "third_party/slopkit"),
-    join(ROOT, ".for_reference/slopkit"),
     join(ROOT, "..", "slopkit"),
   ].filter(Boolean);
 

@@ -1,10 +1,13 @@
 PYTHON ?= python3
 
-.PHONY: all host installer test test-native clean
+.PHONY: all version host installer test test-native clean
 
 all: host
 
-host:
+version:
+	$(PYTHON) tools/gen_version.py
+
+host: version
 	$(PYTHON) tools/build_host.py
 
 installer:

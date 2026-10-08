@@ -15,18 +15,20 @@ import base64
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import zipfile
 
-from gen_version import get_version_info
+from gen_version import get_version_info, sync_version_files
 
 CHUNK = 76
 MARKER = "# [[EMBEDDED_ZIP]]"
 PLACEHOLDER = MARKER + '\nEMBEDDED_ZIP_B64 = ""'
 VERSION_MARKER = "# [[VERSION_PLACEHOLDER]]"
-VERSION_PLACEHOLDER = VERSION_MARKER + '\nVERSION = "0.1.0"'
+VERSION_RE = re.compile(re.escape(VERSION_MARKER) + r'\s*\nVERSION\s*=\s*"[^"]*"')
+VERSION_PLACEHOLDER = VERSION_MARKER + '\nVERSION = "0.1.1"'
 BUILD_TIME_MARKER = "# [[BUILD_TIME_PLACEHOLDER]]"
 BUILD_TIME_PLACEHOLDER = BUILD_TIME_MARKER + '\nBUILD_TIME = "dev"'
 CERT_MARKER = "# [[SSL_CERT_PLACEHOLDER]]"
@@ -57,10 +59,16 @@ def should_include(rel_path):
     return True
 
 
-def build_zip(page=None, version="0.1.0", build_time="dev"):
+def build_zip(page=None, version=None, build_time="dev"):
     root = repo_root()
     archive = io.BytesIO()
     file_map = {}
+
+    if version is None:
+        try:
+            version = get_version_info()["base"]
+        except Exception:
+            version = "0.1.1"
 
     v_bytes = version.encode("utf-8")
     bt_bytes = build_time.encode("utf-8")
@@ -173,11 +181,11 @@ def embed_payload(source, payload_b64):
 
 
 def embed_version(source, version, build_time):
-    if VERSION_PLACEHOLDER not in source:
-        sys.exit(f"Error: '{VERSION_PLACEHOLDER}' not found in host.py")
+    if not VERSION_RE.search(source):
+        sys.exit(f"Error: '{VERSION_MARKER}' and VERSION assignment not found in host.py")
     if BUILD_TIME_PLACEHOLDER not in source:
         sys.exit(f"Error: '{BUILD_TIME_PLACEHOLDER}' not found in host.py")
-    source = source.replace(VERSION_PLACEHOLDER, VERSION_MARKER + f'\nVERSION = "{version}"')
+    source = VERSION_RE.sub(VERSION_MARKER + f'\nVERSION = "{version}"', source, count=1)
     return source.replace(BUILD_TIME_PLACEHOLDER, BUILD_TIME_MARKER + f'\nBUILD_TIME = "{build_time}"')
 
 
@@ -191,6 +199,7 @@ def embed_server_cert(source, cert_pem, key_pem):
 
 
 def main(argv=None):
+    sync_version_files()
     parser = argparse.ArgumentParser(
         prog="build_host.py",
         description="Build standalone webkit-remote-loader-host.py with embedded files and certs.",

@@ -32,7 +32,7 @@ import zipfile
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 # [[VERSION_PLACEHOLDER]]
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 HOST_NAME = "PS5 WEBKIT REMOTE LOADER"
 
 # [[BUILD_TIME_PLACEHOLDER]]

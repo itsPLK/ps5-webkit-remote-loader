@@ -5,6 +5,7 @@ set -e
 cd "$(dirname "$0")"
 
 # 1. Compute version and build time
+python3 tools/gen_version.py
 VERSION=$(python3 tools/gen_version.py --print)
 export BUILD_VERSION="$VERSION"
 BUILD_TIME=$(python3 tools/gen_version.py --build-time)

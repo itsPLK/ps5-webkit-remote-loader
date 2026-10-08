@@ -3,6 +3,7 @@ import { installWindowP } from "./utils/mem.js";
 import { DEFAULT_BINARIES } from "./binaries.js";
 import { installInlineFetch } from "./inlinefetch.js";
 import { runPayloadQueue } from "./standalone.js";
+import { LOADER_VERSION } from "./loader.js";
 
 // Seed the binary configuration for session overrides.
 window.LOADER_CONFIG = { ...DEFAULT_BINARIES, ...((typeof window !== "undefined" && window.LOADER_CONFIG) || {}) };
@@ -191,7 +192,7 @@ async function run() {
       : "", "info");
     writeLog("no socket: this file is the whole session", "info");
   } else {
-    writeLog("PS5 WebKit Remote Loader v0.1.0", "info");
+    writeLog(`PS5 WebKit Remote Loader v${LOADER_VERSION}`, "info");
   }
   writeLog(`Agent: ${navigator.userAgent}`, "info");
   writeLog(`Firmware: ${window.fw_str}`, "info");

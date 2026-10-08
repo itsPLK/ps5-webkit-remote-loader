@@ -9,7 +9,7 @@ on:
         required: false
         default: dev
       custom_version:
-        description: 'Optional custom version suffix (e.g. test1 -> 0.1.0-test1). Leave blank for auto pre-release tag.'
+        description: 'Optional custom version suffix (e.g. test1 -> 0.1.1-test1). Leave blank for auto pre-release tag.'
         type: string
         required: false
 

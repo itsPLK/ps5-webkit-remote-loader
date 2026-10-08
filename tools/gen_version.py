@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compute the build version and generate installer/include/wkrl_version.h + installer/assets/param.json.
+"""Compute the build version, generate installer headers and sync version across all files.
 
 Version scheme:
     dev:          <base>-dev-<suffix>
@@ -7,8 +7,10 @@ Version scheme:
     pre-release:  <base>-pre-<suffix>
 
 Usage:
-    gen_version.py                 # (re)generate version header and app metadata
+    gen_version.py                 # sync version across all project files
     gen_version.py --print         # print the full version string
+    gen_version.py --set 0.1.2     # set new base version and sync everywhere
+    gen_version.py --bump [patch|minor|major]  # bump version and sync everywhere
 """
 
 import datetime
@@ -18,24 +20,61 @@ import subprocess
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+VERSION_FILE = os.path.join(REPO, "VERSION")
 HEADER = os.path.join(REPO, "installer", "include", "wkrli_version.h")
 WKRLI_H = os.path.join(REPO, "installer", "include", "wkrli.h")
 PARAM_JSON = os.path.join(REPO, "installer", "assets", "param.json")
 PARAM_TEMPLATE = os.path.join(REPO, "installer", "assets", "param.json.template")
+HOST_PY = os.path.join(REPO, "host.py")
+LOADER_JS = os.path.join(REPO, "src", "loader.js")
 VERSION_PLACEHOLDER = b"[[VERSION_PLACEHOLDER]]"
 
 
 def read_base_version():
-    """Read the base WKRLI_VERSION from installer/include/wkrli.h."""
-    try:
-        with open(WKRLI_H) as f:
-            content = f.read()
-        m = re.search(r'#define\s+WKRLI?_VERSION\s+"([^"]+)"', content)
-        if m:
-            return m.group(1)
-    except OSError:
-        pass
-    return "0.1.0"
+    """Read the base version from VERSION file or installer/include/wkrli.h."""
+    wkrli_v = None
+    if os.path.isfile(WKRLI_H):
+        try:
+            with open(WKRLI_H, "r", encoding="utf-8") as f:
+                m = re.search(r'#define\s+WKRLI?_VERSION\s+"([^"]+)"', f.read())
+                if m:
+                    wkrli_v = m.group(1).strip()
+        except OSError:
+            pass
+
+    file_v = None
+    if os.path.isfile(VERSION_FILE):
+        try:
+            with open(VERSION_FILE, "r", encoding="utf-8") as f:
+                file_v = f.read().strip()
+        except OSError:
+            pass
+
+    if file_v and wkrli_v and file_v != wkrli_v:
+        try:
+            if os.path.getmtime(WKRLI_H) > os.path.getmtime(VERSION_FILE):
+                return wkrli_v
+            return file_v
+        except OSError:
+            return file_v
+
+    return file_v or wkrli_v or "0.1.1"
+
+
+def bump_version(current, part="patch"):
+    """Bump semver version string (patch, minor, or major)."""
+    m = re.match(r"^(\d+)\.(\d+)\.(\d+)(.*)$", current)
+    if not m:
+        raise ValueError(f"Cannot parse semver version: {current}")
+    major, minor, patch, extra = int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4)
+    if part == "major":
+        return f"{major + 1}.0.0"
+    elif part == "minor":
+        return f"{major}.{minor + 1}.0"
+    elif part == "patch":
+        return f"{major}.{minor}.{patch + 1}"
+    else:
+        raise ValueError(f"Unknown bump target: {part} (expected major, minor, or patch)")
 
 
 def git(*args):
@@ -48,14 +87,15 @@ def git(*args):
         return ""
 
 
-def get_version_info(build_type=None):
+def get_version_info(build_type=None, base=None):
     """Compute version components."""
     if build_type is None:
         build_type = os.environ.get("BUILD_TYPE", "dev")
     if build_type not in ("dev", "stable", "pre-release"):
         build_type = "dev"
 
-    base = read_base_version()
+    if base is None:
+        base = read_base_version()
     custom = os.environ.get("CUSTOM_VERSION", "").strip()
 
     git_hash = git("rev-parse", "--short", "HEAD")
@@ -120,28 +160,111 @@ def write_if_changed(path, data):
         f.write(data)
 
 
-def main(argv=None):
-    argv = argv if argv is not None else sys.argv[1:]
-    if argv and argv[0] == "--print":
-        print(get_version_info()["full"])
-        return 0
-    if argv and argv[0] == "--build-time":
-        print(get_version_info()["build_time"])
-        return 0
-    if argv and argv[0] == "--title":
+def sync_version_files(info=None):
+    """Synchronize the base version across all project files."""
+    if info is None:
         info = get_version_info()
-        print(f"PS5 WebKit Remote Loader v{info['full']} by PLK (built {info['build_time']})")
-        return 0
 
-    info = get_version_info()
+    base = info["base"]
+
+    # 1. VERSION file in repo root
+    write_if_changed(VERSION_FILE, (base + "\n").encode("utf-8"))
+
+    # 2. installer/include/wkrli.h
+    if os.path.isfile(WKRLI_H):
+        try:
+            with open(WKRLI_H, "r", encoding="utf-8") as f:
+                content = f.read()
+            updated = re.sub(
+                r'(#define\s+WKRLI?_VERSION\s+")[^"]*(")',
+                r'\g<1>' + base + r'\g<2>',
+                content,
+            )
+            write_if_changed(WKRLI_H, updated.encode("utf-8"))
+        except OSError:
+            pass
+
+    # 3. installer/include/wkrli_version.h
     write_if_changed(HEADER, header_text(info).encode("utf-8"))
 
+    # 4. installer/assets/param.json
     if os.path.isfile(PARAM_TEMPLATE):
-        with open(PARAM_TEMPLATE, "rb") as f:
-            param = f.read()
-        write_if_changed(
-            PARAM_JSON, param.replace(VERSION_PLACEHOLDER, info["title"].encode("utf-8"))
-        )
+        try:
+            with open(PARAM_TEMPLATE, "rb") as f:
+                param = f.read()
+            write_if_changed(
+                PARAM_JSON, param.replace(VERSION_PLACEHOLDER, info["title"].encode("utf-8"))
+            )
+        except OSError:
+            pass
+
+    # 5. host.py
+    if os.path.isfile(HOST_PY):
+        try:
+            with open(HOST_PY, "r", encoding="utf-8") as f:
+                content = f.read()
+            updated = re.sub(
+                r'(#\s*\[\[VERSION_PLACEHOLDER\]\]\s*\nVERSION\s*=\s*")[^"]*(")',
+                r'\g<1>' + base + r'\g<2>',
+                content,
+            )
+            write_if_changed(HOST_PY, updated.encode("utf-8"))
+        except OSError:
+            pass
+
+    # 6. src/loader.js
+    if os.path.isfile(LOADER_JS):
+        try:
+            with open(LOADER_JS, "r", encoding="utf-8") as f:
+                content = f.read()
+            updated = re.sub(
+                r'(export\s+const\s+LOADER_VERSION\s*=\s*")[^"]*(")',
+                r'\g<1>' + base + r'\g<2>',
+                content,
+            )
+            write_if_changed(LOADER_JS, updated.encode("utf-8"))
+        except OSError:
+            pass
+
+
+def main(argv=None):
+    argv = argv if argv is not None else sys.argv[1:]
+    if argv:
+        cmd = argv[0]
+        if cmd == "--print":
+            print(get_version_info()["full"])
+            return 0
+        if cmd == "--base":
+            print(get_version_info()["base"])
+            return 0
+        if cmd == "--build-time":
+            print(get_version_info()["build_time"])
+            return 0
+        if cmd == "--title":
+            info = get_version_info()
+            print(f"PS5 WebKit Remote Loader v{info['full']} by PLK (built {info['build_time']})")
+            return 0
+        if cmd in ("--set", "-s"):
+            if len(argv) < 2:
+                sys.exit("Error: --set requires a version argument (e.g. 0.1.2)")
+            new_ver = argv[1].lstrip("v").strip()
+            write_if_changed(VERSION_FILE, (new_ver + "\n").encode("utf-8"))
+            info = get_version_info(base=new_ver)
+            sync_version_files(info)
+            print(f"Set version to {new_ver} and synced all files.")
+            return 0
+        if cmd in ("--bump", "-b"):
+            part = argv[1] if len(argv) > 1 and argv[1] in ("patch", "minor", "major") else "patch"
+            current = read_base_version()
+            new_ver = bump_version(current, part)
+            write_if_changed(VERSION_FILE, (new_ver + "\n").encode("utf-8"))
+            info = get_version_info(base=new_ver)
+            sync_version_files(info)
+            print(f"Bumped version from {current} to {new_ver} ({part}) and synced all files.")
+            return 0
+
+    info = get_version_info()
+    sync_version_files(info)
     return 0
 
 

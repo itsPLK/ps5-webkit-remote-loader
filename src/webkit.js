@@ -159,21 +159,39 @@ function dropAttemptReferences() {
 }
 
 function releaseAttempt() {
+  clearPointerSpray();
   dropAttemptReferences();
   keepAlive = null;
+  liveCandidate = null;
   try {
     history.replaceState(null, "");
   } catch {}
+  if (typeof globalThis.gc === "function") {
+    try {
+      globalThis.gc();
+    } catch {}
+  }
 }
 
 function retry(reason, safeToRelease) {
   const nextAttempt = attemptNumber + 1;
   emit("Retry", `${reason} attempt ${nextAttempt}`);
-  if (safeToRelease) releaseAttempt();
+
+  // Memory-safe fallback retry: generic failure path used to jump to the
+  // next attempt after only 50 ms without dropping the previous attempt's
+  // large carrier/SSV graphs. Match the cleanup discipline of the safe-retry
+  // path so a transient failure cannot stack another ~100+ MB attempt on top
+  // of allocations that are still awaiting reclamation.
+  releaseAttempt();
+  const retryDelay = Math.max(safeToRelease ? 750 : 50, 750);
+  emit("AUTO-RETRY-CLEANUP", `attempt=${attemptNumber}-delay=${retryDelay}`);
   setTimeout(() => {
+    try {
+      history.replaceState(null, "");
+    } catch {}
     attemptNumber = nextAttempt;
     startAttempt();
-  }, safeToRelease ? 750 : 50);
+  }, retryDelay);
 }
 
 function finishEarlySafeAttempt(reason, detail = "") {

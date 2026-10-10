@@ -11,7 +11,7 @@ import { DEFAULT_BINARIES } from "./binaries.js";
 const DEFAULT_PORT = 9027;
 const ACCEPT_TIMEOUT_MS = 300 * 1000;
 export const PAYLOAD_TIMEOUT_MS = 10 * 60 * 1000;
-export const LOADER_VERSION = "0.1.1";
+export const LOADER_VERSION = "0.1.2";
 
 // Race a promise against a deadline, resolving "overran" if exceeded.
 export function withDeadline(work, ms, onOverrun, configure) {

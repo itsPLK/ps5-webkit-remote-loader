@@ -390,9 +390,32 @@ class GuideHandler(SimpleHTTPRequestHandler):
         return io.BytesIO(data)
 
 
+class _ThreadingHTTPServer(ThreadingHTTPServer):
+    """Like ThreadingHTTPServer, but perform TLS handshakes in client threads.
+
+    Wrapping the listening socket in TLS performs the handshake inside
+    accept(). A single connection that never completes its handshake blocks
+    the accept loop, prevents new requests, and hangs shutdown().
+    """
+
+    ssl_context = None
+
+    def process_request_thread(self, request, client_address):
+        # process_request() runs in the accept thread; process_request_thread()
+        # runs in the new client thread, where the handshake belongs.
+        ctx = self.ssl_context
+        if ctx is not None:
+            try:
+                request = ctx.wrap_socket(request, server_side=True)
+            except OSError:
+                self.shutdown_request(request)
+                return
+        super().process_request_thread(request, client_address)
+
+
 def build_server(host, port, allowed_host, status, quiet):
     handler = lambda *a, **kw: GuideHandler(*a, allowed_host=allowed_host, **kw)
-    httpd = ThreadingHTTPServer((host, port), handler)
+    httpd = _ThreadingHTTPServer((host, port), handler)
     httpd.daemon_threads = True
     httpd.status = status
     httpd.quiet = quiet
@@ -694,7 +717,9 @@ def main(argv=None):
             ctx.minimum_version = ssl.TLSVersion.TLSv1
         except (ValueError, ssl.SSLError):
             pass  # LibreSSL here will not go below its own floor
-        httpsd.socket = ctx.wrap_socket(httpsd.socket, server_side=True)
+        # Keep the listening socket plain; perform each TLS handshake in
+        # _ThreadingHTTPServer.process_request_thread() in the client thread.
+        httpsd.ssl_context = ctx
         # The cert is already loaded into the context, so leaking the temp file
         # is harmless if the OS still holds it open.
         for name in (cert_file.name, key_file.name):

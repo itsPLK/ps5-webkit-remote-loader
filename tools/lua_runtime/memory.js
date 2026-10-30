@@ -1,4 +1,5 @@
 const { lua, to_luastring: str } = require('fengari');
+const {pushOwnedBytes} = require('./owned_string');
 
 module.exports = function installMemory(L, api, { value, push, bind, native }) {
   const LIMIT = 64 * 1024;
@@ -15,6 +16,13 @@ module.exports = function installMemory(L, api, { value, push, bind, native }) {
   }
   function fromNative(n) {
     return (BigInt(n.hi >>> 0) << BigInt(32)) | BigInt(n.low >>> 0);
+  }
+  // These primitives are synchronous and do not retain their address argument.
+  // Reuse one pointer, including carry into the high word, throughout a copy.
+  function advance(pointer, bytes) {
+    const low = (pointer.low + bytes) >>> 0;
+    if (low < pointer.low) pointer.hi = (pointer.hi + 1) >>> 0;
+    pointer.low = low;
   }
   lua.lua_newtable(L);
   function field(name, fn) {
@@ -47,10 +55,32 @@ module.exports = function installMemory(L, api, { value, push, bind, native }) {
     });
   }
   field('read_buffer', s => {
-    const n = size(s, 2), start = address(s, n);
+    const n = size(s, 2), pointer = native(address(s, n));
     const buffer = new Uint8Array(n);
-    for (let i=0;i<n;i++) buffer[i] = api.p.read1(native(start + BigInt(i)));
-    lua.lua_pushlstring(s, buffer, n);
+    if (typeof api.p.readInto === 'function') {
+      api.p.readInto(pointer, buffer);
+      pushOwnedBytes(s, buffer);
+      return 1;
+    }
+    let i = 0;
+    // Align before widening; never read outside the requested byte range.
+    while (i < n && (pointer.low & 3)) {
+      buffer[i++] = api.p.read1(pointer);
+      advance(pointer, 1);
+    }
+    while (i + 4 <= n) {
+      const word = api.p.read4(pointer);
+      buffer[i++] = word;
+      buffer[i++] = word >>> 8;
+      buffer[i++] = word >>> 16;
+      buffer[i++] = word >>> 24;
+      advance(pointer, 4);
+    }
+    while (i < n) {
+      buffer[i++] = api.p.read1(pointer);
+      advance(pointer, 1);
+    }
+    pushOwnedBytes(s, buffer);
     return 1;
   });
   field('write_buffer', s => {
@@ -58,8 +88,27 @@ module.exports = function installMemory(L, api, { value, push, bind, native }) {
     if (lua.lua_type(s, 2) !== lua.LUA_TSTRING) throw Error('memory.write_buffer requires a Lua string');
     const buffer = lua.lua_tolstring(s, 2);
     if (buffer.length > LIMIT) throw Error('memory buffer exceeds 64 KiB limit');
-    const start = address(s, buffer.length);
-    for (let i=0;i<buffer.length;i++) api.p.write1(native(start + BigInt(i)), buffer[i]);
+    const pointer = native(address(s, buffer.length));
+    if (typeof api.p.writeBytes === 'function') {
+      api.p.writeBytes(pointer, buffer);
+      return 0;
+    }
+    let i = 0;
+    while (i < buffer.length && (pointer.low & 3)) {
+      api.p.write1(pointer, buffer[i++]);
+      advance(pointer, 1);
+    }
+    while (i + 4 <= buffer.length) {
+      const word = (buffer[i] | (buffer[i + 1] << 8) |
+        (buffer[i + 2] << 16) | (buffer[i + 3] << 24)) >>> 0;
+      api.p.write4(pointer, word);
+      i += 4;
+      advance(pointer, 4);
+    }
+    while (i < buffer.length) {
+      api.p.write1(pointer, buffer[i++]);
+      advance(pointer, 1);
+    }
     return 0;
   });
   lua.lua_setglobal(L, str('memory'));

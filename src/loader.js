@@ -539,6 +539,23 @@ export function createPayloadSession({
     }
   }
 
+  function guardReadRange(address, length) {
+    if (flags.allowXotextReads || !length) return;
+    const pointer = typeof address === "number"
+      ? new state.int64(address >>> 0, Math.floor(address / 0x100000000)) : address;
+    if ((pointer.hi >>> 0) !== 0) return;
+    const start = pointer.low >>> 0;
+    for (const r of xotext) {
+      let cursor = Math.max(start, r.start);
+      const end = Math.min(start + length, r.end);
+      while (cursor < end) {
+        const allocation = owned.find(o => cursor >= o.start && cursor < o.end);
+        if (!allocation) guardRead("readInto", new state.int64(cursor, 0));
+        else cursor = allocation.end;
+      }
+    }
+  }
+
   const api = {
     p: Object.assign(Object.create(null), state.p, {
       malloc(size, type) {
@@ -557,7 +574,10 @@ export function createPayloadSession({
       read2: (a) => { guardRead("read2", a); return state.p.read2(a); },
       read4: (a) => { guardRead("read4", a); return state.p.read4(a); },
       read8: (a) => { guardRead("read8", a); return state.p.read8(a); },
-      readInto: null,
+      readInto: typeof state.p.readInto === "function" ? (a, buffer) => {
+        guardReadRange(a, buffer.length);
+        return state.p.readInto(a, buffer);
+      } : null,
     }),
     allowXotextReads: false,
     set allowXotextReads(v) { flags.allowXotextReads = !!v; },

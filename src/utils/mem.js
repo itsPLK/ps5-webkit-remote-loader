@@ -174,6 +174,38 @@ function write8(address, value) {
   }
 }
 
+function copyBytes(address, buffer, writing) {
+  if (!ArrayBuffer.isView(buffer) || buffer.BYTES_PER_ELEMENT !== 1) {
+    throw new TypeError("mem: bulk copy requires a byte typed array");
+  }
+  const start = asAddress(address);
+  if (start + buffer.length > 0x1000000000000) {
+    throw new RangeError("mem: bulk copy exceeds canonical address range");
+  }
+  if (!memory || !Number.isInteger(memory.size) || memory.size <= 0) {
+    throw new Error("mem: invalid memory window");
+  }
+  const bytes = memory.bytes;
+  for (let offset = 0; offset < buffer.length;) {
+    const count = Math.min(memory.size, buffer.length - offset);
+    try {
+      memory.setAddress(start + offset);
+      // Avoid allocation or creating views while the window is redirected.
+      if (writing) {
+        for (let i = 0; i < count; i++) bytes[i] = buffer[offset + i];
+      } else {
+        for (let i = 0; i < count; i++) buffer[offset + i] = bytes[i];
+      }
+    } finally {
+      memory.resetAddress();
+    }
+    offset += count;
+  }
+}
+
+function readInto(address, buffer) { copyBytes(address, buffer, false); }
+function writeBytes(address, buffer) { copyBytes(address, buffer, true); }
+
 function leakval(object) {
   const type = typeof object;
   if (object === null || (type !== "object" && type !== "function")) {
@@ -211,6 +243,8 @@ export function installWindowP(value) {
     write2,
     write4,
     write8,
+    readInto,
+    writeBytes,
     leakval,
   };
 

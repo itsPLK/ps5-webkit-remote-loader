@@ -419,6 +419,27 @@ console.log("standalone queue runner (protocol + control flow, NOT the ROP chain
     (text().match(/.*lands inside.*/) || [""])[0]);
 }
 
+// Bulk reads must guard intersections, not only the starting address.
+{
+  const { p, chain } = makeFake();
+  let reads = 0;
+  p.readInto = () => { reads++; };
+  clear();
+  await runPayloadQueue({p, chain, payloads: [{name: "bulk-guard.js", source: `return async function(api) {
+    const start = new api.int64(api.libKernelBase.low - 8, 0);
+    let blocked = false;
+    try { api.p.readInto(start, new Uint8Array(16)); }
+    catch (e) { blocked = e.message.includes("execute-only"); }
+    if (!blocked) throw Error("bulk intersection was allowed");
+    api.p.readInto(start, new Uint8Array(8));
+    api.p.readInto(api.libKernelBase, new Uint8Array(0));
+    api.allowXotextReads = true;
+    api.p.readInto(start, new Uint8Array(16));
+    await api.log("bulk guards OK");
+  };`}]});
+  check("bulk reads check the entire range before touching memory", text().includes("bulk guards OK") && reads === 3);
+}
+
 // --- 11. setPayloadTimeout, the way a service payload uses it ---------------
 {
   const { p, chain } = makeFake();

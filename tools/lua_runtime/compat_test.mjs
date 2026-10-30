@@ -229,4 +229,48 @@ probeResult=new int64(0xffffffff,0xffffffff);
 await run(probeApi,'assert(not file_exists("/missing"))');
 assert.deepEqual(probeCalls.map(c=>c[0]),[5],'failed open must not be closed');
 await run(probeApi,'assert(not pcall(file_exists,123))');
+lines.length = 0;
+const benchSource = fs.readFileSync(new URL('../../payloads/lua/compat_bench.lua', import.meta.url), 'utf8');
+await run(api, benchSource);
+assert(lines.some(l => l.includes('Lua arithmetic')));
+assert(lines.some(l => l.includes('getpid syscall')));
+assert.equal(lines.filter(l => l.startsWith('samples_us,')).length, 11);
+assert(lines.includes('benchmark complete; checksums and buffer contents verified'));
+assert(!lines.some(l => /NaN|Infinity/.test(l)), 'zero mock clock must not produce invalid rates');
+// Exercise the direct write path and both sides of its chunk boundary through
+// the shipped bundle, including binary contents, sentinels, and return values.
+const bulkWrites = [];
+const bulkApi = {...api, p: {...api.p, writeBytes: (pointer, data) => {
+  bulkWrites.push({address: pointer.low, length: data.length});
+  assert(data.length <= 65536);
+  bytes.set(data, pointer.low);
+}}};
+const bulkBase = 0x40001;
+for (const length of [0, 1, 64, 65535, 65536, 65537, 131073]) {
+  bytes.fill(0xcc);
+  bulkWrites.length = 0;
+  await run(bulkApi, `
+    local p = uint64(${bulkBase})
+    local data = string.rep("A\\0\\255\\128", ${Math.ceil(length / 4)}):sub(1, ${length})
+    assert(memory.write_buffer(p, data) == p)
+  `);
+  const expectedWrites = [];
+  for (let offset = 0; offset < length; offset += 65536) {
+    expectedWrites.push({address: bulkBase + offset, length: Math.min(65536, length - offset)});
+  }
+  assert.deepEqual(bulkWrites, expectedWrites);
+  const pattern = [65, 0, 255, 128];
+  for (let i = 0; i < length; i++) assert.equal(bytes[bulkBase + i], pattern[i % 4]);
+  assert.equal(bytes[bulkBase - 1], 0xcc);
+  assert.equal(bytes[bulkBase + length], 0xcc);
+}
+await run(bulkApi, `
+  local p = uint64(${bulkBase})
+  for _, address in ipairs({p, ${bulkBase}, "${bulkBase}", {h=0, l=${bulkBase}}}) do
+    assert(memory.write_buffer(address, 123) == p)
+    assert(memory.read_buffer(p, 3) == "123")
+    assert(memory.write_buffer(address, "") == p)
+  end
+  assert(not pcall(memory.write_buffer, "invalid address", ""))
+`);
 console.log('Optional compatibility profile tests passed');

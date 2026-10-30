@@ -128,7 +128,14 @@ memory.read_buffer = function(p,n) return core_memory.read_buffer(p,number(n)) e
 -- (a prefetched elf is 385 KiB) is copied in pieces.
 memory.write_buffer = function(p, s)
     local text = tostring(s)
-    local d = uint64(p)
+    local base = uint64(p)
+    -- Most writes fit in one bridge call. Avoid slicing the string, advancing
+    -- a pointer, and constructing a second uint64 for the return value.
+    if #text <= 65536 then
+        if #text > 0 then core_memory.write_buffer(base, text) end
+        return base
+    end
+    local d = base
     local pos, rem = 1, #text
     while rem > 0 do
         local chunk = math.min(rem, 65536)
@@ -137,7 +144,7 @@ memory.write_buffer = function(p, s)
         pos = pos + chunk
         rem = rem - chunk
     end
-    return uint64(p)
+    return base
 end
 function memory.read_null_terminated_string(addr)
     local p = uint64(addr)

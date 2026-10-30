@@ -24,6 +24,18 @@ module.exports = function installMemory(L, api, { value, push, bind, native }) {
     if (low < pointer.low) pointer.hi = (pointer.hi + 1) >>> 0;
     pointer.low = low;
   }
+  // Profiles can request boxed scalar results without going through a Lua
+  // wrapper and constructor. Both forms share validation and guarded reads.
+  function scalarReader(bits, boxed = false) {
+    const bytes = bits / 8;
+    return s => {
+      const result = api.p['read' + bytes](native(address(s, bytes)));
+      if (bits === 64) push(s, fromNative(result));
+      else if (boxed) push(s, BigInt(result >>> 0));
+      else lua.lua_pushnumber(s, result >>> 0);
+      return 1;
+    };
+  }
   lua.lua_newtable(L);
   function field(name, fn) {
     bind(L, fn);
@@ -41,12 +53,7 @@ module.exports = function installMemory(L, api, { value, push, bind, native }) {
   });
   for (const bits of [8,16,32,64]) {
     const bytes = bits / 8;
-    field('read' + bits, s => {
-      const result = api.p['read' + bytes](native(address(s, bytes)));
-      if (bits === 64) push(s, fromNative(result));
-      else lua.lua_pushnumber(s, result >>> 0);
-      return 1;
-    });
+    field('read' + bits, scalarReader(bits));
     field('write' + bits, s => {
       const pointer = native(address(s, bytes));
       const n = value(s, 2);
@@ -54,7 +61,7 @@ module.exports = function installMemory(L, api, { value, push, bind, native }) {
       return 0;
     });
   }
-  field('read_buffer', s => {
+  function readBuffer(s) {
     const n = size(s, 2), pointer = native(address(s, n));
     const buffer = new Uint8Array(n);
     if (typeof api.p.readInto === 'function') {
@@ -82,16 +89,24 @@ module.exports = function installMemory(L, api, { value, push, bind, native }) {
     }
     pushOwnedBytes(s, buffer);
     return 1;
-  });
-  field('write_buffer', s => {
+  }
+  function writeBuffer(s, returnPointer = false) {
     // Require a real binary Lua string, avoiding implicit numeric conversions.
     if (lua.lua_type(s, 2) !== lua.LUA_TSTRING) throw Error('memory.write_buffer requires a Lua string');
     const buffer = lua.lua_tolstring(s, 2);
     if (buffer.length > LIMIT) throw Error('memory buffer exceeds 64 KiB limit');
-    const pointer = native(address(s, buffer.length));
+    const start = address(s, buffer.length);
+    // An empty compatibility write validates and returns its pointer without
+    // touching native memory. Core writes retain their existing behavior.
+    if (returnPointer && !buffer.length) { push(s, start); return 1; }
+    writeBytes(native(start), buffer);
+    if (returnPointer) { push(s, start); return 1; }
+    return 0;
+  }
+  function writeBytes(pointer, buffer) {
     if (typeof api.p.writeBytes === 'function') {
       api.p.writeBytes(pointer, buffer);
-      return 0;
+      return;
     }
     let i = 0;
     while (i < buffer.length && (pointer.low & 3)) {
@@ -109,7 +124,9 @@ module.exports = function installMemory(L, api, { value, push, bind, native }) {
       api.p.write1(pointer, buffer[i++]);
       advance(pointer, 1);
     }
-    return 0;
-  });
+  }
+  field('read_buffer', readBuffer);
+  field('write_buffer', s => writeBuffer(s));
   lua.lua_setglobal(L, str('memory'));
+  return {scalarReader, readBuffer, writeBuffer};
 };

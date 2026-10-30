@@ -186,14 +186,22 @@ function copyBytes(address, buffer, writing) {
     throw new Error("mem: invalid memory window");
   }
   const bytes = memory.bytes;
+  if (bytes.length !== memory.size) throw new Error("mem: memory window size mismatch");
   for (let offset = 0; offset < buffer.length;) {
     const count = Math.min(memory.size, buffer.length - offset);
+    // Only slice ordinary source storage, before redirecting. A subview of the
+    // native window would capture its backing address and must never escape.
+    const source = writing
+      ? (offset === 0 && count === buffer.length ? buffer : buffer.subarray(offset, offset + count))
+      : null;
     try {
       memory.setAddress(start + offset);
-      // Avoid allocation or creating views while the window is redirected.
       if (writing) {
-        for (let i = 0; i < count; i++) bytes[i] = buffer[offset + i];
+        bytes.set(source);
+      } else if (count === memory.size) {
+        buffer.set(bytes, offset);
       } else {
+        // A full-window set would overread a short tail. Keep its exact bounds.
         for (let i = 0; i < count; i++) buffer[offset + i] = bytes[i];
       }
     } finally {
@@ -205,6 +213,26 @@ function copyBytes(address, buffer, writing) {
 
 function readInto(address, buffer) { copyBytes(address, buffer, false); }
 function writeBytes(address, buffer) { copyBytes(address, buffer, true); }
+
+// Diagnostic only: repeat the bulk path's window selection/restoration without
+// accessing bytes. No timers or counters are added to the normal copy path.
+function probeMemoryWindow(address, length, passes) {
+  const start = asAddress(address);
+  if (!Number.isInteger(length) || length < 1 || length > 65536 ||
+      !Number.isInteger(passes) || passes < 1 || passes > 65536) {
+    throw new RangeError("mem: invalid window probe workload");
+  }
+  if (start + length > 0x1000000000000) throw new RangeError("mem: probe range wraps");
+  if (!memory || !Number.isInteger(memory.size) || memory.size <= 0)
+    throw new Error("mem: invalid memory window");
+  for (let pass = 0; pass < passes; pass++) {
+    for (let offset = 0; offset < length; offset += memory.size) {
+      try { memory.setAddress(start + offset); }
+      finally { memory.resetAddress(); }
+    }
+  }
+  return passes * Math.ceil(length / memory.size);
+}
 
 function leakval(object) {
   const type = typeof object;
@@ -245,6 +273,8 @@ export function installWindowP(value) {
     write8,
     readInto,
     writeBytes,
+    probeMemoryWindow,
+    memoryWindowSize: memory.size,
     leakval,
   };
 

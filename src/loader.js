@@ -491,6 +491,7 @@ export function createPayloadSession({
               `clear()/add_syscall*() and execute it with run(); syscall() runs ` +
               `the chain by itself and would discard them.`);
           }
+          traceLaunch(`syscall 0x${(sysc >>> 0).toString(16)}`);
           return chain.syscall(sysc, ...a);
         });
       },
@@ -499,11 +500,20 @@ export function createPayloadSession({
         for (let i = 0; i < a.length; i++) {
           if (a[i] !== undefined) checkChainValue(a[i], "call", `arg${i + 1}`);
         }
-        return enqueue(() => chain.call(rip, ...a));
+        return enqueue(() => {
+          traceLaunch(`fcall 0x${(rip.low >>> 0).toString(16)}`);
+          return chain.call(rip, ...a);
+        });
       },
     };
     return api;
   }
+
+  // Optional per-launch chain trace (payload arg `roptrace=1`): maps a klog
+  // crash RIP on the worker thread back to the syscall number that was in
+  // flight via the offsets/<fw>.js syscall map.
+  const roptrace = Array.isArray(args) && args.includes("roptrace=1");
+  const traceLaunch = roptrace ? (desc) => { log(`[rop] ${desc} launch`); } : () => {};
 
   state.gatedChain = gatedChain();
 

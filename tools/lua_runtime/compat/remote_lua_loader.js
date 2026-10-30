@@ -1,30 +1,72 @@
 // Optional profile. Core bridge code has no knowledge of this module.
-const {lua, lauxlib, to_luastring: str} = require('fengari');
+const {lua, lauxlib, to_luastring: str, luastring_eq} = require('fengari');
+const KEYS = {h: str('h'), l: str('l'), tonumber: str('tonumber'), pack: str('pack')};
 const { psluaLiterals } = require('../pslua_literals');
 // The profile is loaded as text, so its own literals need the same double spelling
 // the payload gets: Fengari truncates 0x300000000 (sysctl name translation) to 0.
 const source = psluaLiterals(require('./remote_lua_loader.lua'));
 module.exports = function install(L, api, cap) {
   const {value, push, bind, native, suspend} = cap;
+  // Direct common cases share the core validation and transfer code. Retain a
+  // Lua fallback for conversion/metamethod behavior and large-write chunking.
+  function bufferFactory(name, eligible, fast) {
+    bind(L, state => {
+      lua.lua_pushvalue(state, 1);
+      lua.lua_pushcclosure(state, s => {
+        if (!eligible(s)) {
+          lua.lua_pushvalue(s, lua.lua_upvalueindex(1));
+          lua.lua_pushvalue(s, 1);
+          lua.lua_pushvalue(s, 2);
+          lua.lua_callk(s, 2, 1, 0, () => 1);
+          return 1;
+        }
+        try { return fast(s); }
+        catch (e) { return lauxlib.luaL_error(s, str(String(e.message || e))); }
+      }, 1);
+      return 1;
+    });
+    lua.lua_setglobal(L, str(name));
+  }
+  bufferFactory('__compat_buffer_reader',
+    s => lua.lua_type(s, 2) !== lua.LUA_TUSERDATA, cap.readBuffer);
+  bufferFactory('__compat_buffer_writer', s =>
+    lua.lua_type(s, 1) !== lua.LUA_TTABLE &&
+    lua.lua_type(s, 2) === lua.LUA_TSTRING && lua.lua_rawlen(s, 2) <= 65536,
+    s => cap.writeBuffer(s, true));
+  lua.lua_getglobal(L, str('memory'));
+  for (const [name, bits] of [['byte', 8], ['word', 16], ['dword', 32], ['qword', 64]]) {
+    bind(L, cap.scalarReader(bits, true));
+    lua.lua_setfield(L, -2, str('read_' + name));
+  }
+  lua.lua_pop(L, 1);
   lauxlib.luaL_getmetatable(L, str('wkrl.uint64'));
+  // Reference uint64 methods are shared functions. Allocate each callback once
+  // per state rather than allocating a new closure on every method lookup.
+  bind(L, state => {
+    const n = BigInt.asIntN(64,value(state,1));
+    const number = Number(n);
+    if (!Number.isSafeInteger(number)) throw Error('uint64:tonumber would lose precision');
+    lua.lua_pushnumber(state,number); return 1;
+  });
+  const pushTonumber = lua.lua_toproxy(L, -1);
+  lua.lua_pop(L, 1);
+  bind(L, state => {
+    let n = value(state,1); const bytes = new Uint8Array(8);
+    for (let i=0;i<8;i++) { bytes[i]=Number(n & BigInt(255)); n >>= BigInt(8); }
+    lua.lua_pushlstring(state,bytes,8); return 1;
+  });
+  const pushPack = lua.lua_toproxy(L, -1);
+  lua.lua_pop(L, 1);
   bind(L, s => {
-    const key = lua.lua_tojsstring(s, 2);
-    if (key === 'h' || key === 'l') {
+    const key = lua.lua_tolstring(s, 2);
+    const high = key && luastring_eq(key, KEYS.h);
+    if (high || (key && luastring_eq(key, KEYS.l))) {
       const n = value(s,1);
-      lua.lua_pushnumber(s, Number(key === 'h' ? n >> BigInt(32) : n & BigInt('0xffffffff')));
-    } else if (key === 'tonumber') {
-      bind(s, state => {
-        const n = BigInt.asIntN(64,value(state,1));
-        const number = Number(n);
-        if (!Number.isSafeInteger(number)) throw Error('uint64:tonumber would lose precision');
-        lua.lua_pushnumber(state,number); return 1;
-      });
-    } else if (key === 'pack') {
-      bind(s, state => {
-        let n = value(state,1); const bytes = new Uint8Array(8);
-        for (let i=0;i<8;i++) { bytes[i]=Number(n & BigInt(255)); n >>= BigInt(8); }
-        lua.lua_pushlstring(state,bytes,8); return 1;
-      });
+      lua.lua_pushnumber(s, Number(high ? n >> BigInt(32) : n & BigInt('0xffffffff')));
+    } else if (key && luastring_eq(key, KEYS.tonumber)) {
+      pushTonumber(s);
+    } else if (key && luastring_eq(key, KEYS.pack)) {
+      pushPack(s);
     } else lua.lua_pushnil(s);
     return 1;
   });
@@ -37,6 +79,40 @@ module.exports = function install(L, api, cap) {
     push(s,n); return 1;
   });
   lua.lua_setglobal(L,str('__compat_unpack'));
+  // The factory captures the Lua table-conversion fallback as an upvalue. Plain
+  // values and plain {h,l} tables avoid interpreted constructor dispatch; tables
+  // with metamethods retain Lua's field-access and yielding behavior.
+  bind(L, state => {
+    lua.lua_pushvalue(state, 1);
+    lua.lua_pushcclosure(state, s => {
+      const table = lua.lua_type(s, 2) === lua.LUA_TTABLE;
+      if (table && lua.lua_getmetatable(s, 2)) {
+        lua.lua_pop(s, 1);
+        lua.lua_pushvalue(s, lua.lua_upvalueindex(1));
+        lua.lua_pushvalue(s, 2);
+        lua.lua_callk(s, 1, 1, 0, () => 1);
+        return 1;
+      }
+      try {
+        if (table) {
+          lua.lua_getfield(s, 2, KEYS.h);
+          const high = value(s, -1);
+          lua.lua_pop(s, 1);
+          lua.lua_getfield(s, 2, KEYS.l);
+          const low = value(s, -1);
+          lua.lua_pop(s, 1);
+          push(s, (high << BigInt(32)) | low);
+        } else {
+          push(s, value(s, 2));
+        }
+        return 1;
+      } catch (e) {
+        return lauxlib.luaL_error(s, str(String(e.message || e)));
+      }
+    }, 1);
+    return 1;
+  });
+  lua.lua_setglobal(L, str('__compat_make_uint64_constructor'));
   bind(L, s => {
     const ts = Number(BigInt.asIntN(64, value(s, 1)));
     const d = new Date(ts * 1000);
@@ -65,6 +141,31 @@ module.exports = function install(L, api, cap) {
     return 0;
   });
   lua.lua_setglobal(L, str('__compat_untrack_region'));
+  // Sleep without routing nanosleep through the hijacked worker chain:
+  // syscalls executed with RSP inside the chain buffer fail the PS5 user-stack
+  // check whenever they actually block (SYSTEM_STACK_CHECK_FAILURE 0xa0020307).
+  // A JS timer yield suspends the Lua coroutine instead and leaves the worker
+  // parked. Opt out with the payload arg `sleep=nanosleep`.
+  if (!((api.args || []).includes('sleep=nanosleep'))) {
+    // Do not use bind() here: Fengari implements lua_yieldk by throwing its
+    // internal yield sentinel, and bind() catches every throw as a Lua error.
+    // Let the sentinel propagate to lua_resume so the timer can suspend Lua.
+    lua.lua_pushcfunction(L, s => {
+      let total_ns;
+      try {
+        total_ns = Number(value(s, 1));
+      } catch (error) {
+        return lauxlib.luaL_error(s, str(String(error.message || error)));
+      }
+      const ms = Math.min(Math.max(0, Math.round(total_ns / 1e6)), 2147483647);
+      return suspend(
+        s,
+        () => new Promise(resolve => setTimeout(resolve, ms)),
+        state => (lua.lua_pushinteger(state, 0), 1)
+      );
+    });
+    lua.lua_setglobal(L, str('__compat_host_sleep'));
+  }
   for (const [name, pointer] of Object.entries({
     eboot_base: api.libSceNKWebKitBase || { low: 0, hi: 0 },
     libc_base: api.libSceLibcInternalBase || { low: 0, hi: 0 },

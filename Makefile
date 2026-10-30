@@ -19,6 +19,7 @@ installer:
 
 test: lua-runtime
 	node tools/memory_bulk_test.mjs
+	node tools/memory_bench_test.mjs
 	node tools/worker_timeout_test.mjs
 	node tools/selftest.js
 	node tools/standalone_test.js

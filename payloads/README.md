@@ -23,6 +23,29 @@ See [docs/API.md](../docs/API.md) for the payload authoring API reference.
 | [poops.js](poops.js) | Poops kernel exploit (FW 7.00–12.00) ladder | See below |
 
 
+## Host memory diagnostics
+
+Reload the updated WebKit loader, then run:
+
+```sh
+python3 tools/send.py <PS5_IP> 9027 payloads/memory_bench.js
+```
+
+This JS payload measures window selection/reset without byte access, indexed
+copies, typed-array `set`, allocation, and native reads/writes with reused or fresh
+buffers. It uses `performance.now`, checks the clock, and reports five samples
+after warmup. It disables its payload timeout itself; no Lua compatibility or
+service arguments are needed. `--arg quick` is a short correctness smoke run.
+
+This diagnostic runs only in WebKit, not in native remote_lua_loader. Each default
+row processes 2 MiB or the corresponding number of window cycles. Setup, byte
+verification, and logs are outside timing. Allocation rows include natural GC;
+reported throughput there describes allocation volume, not copied data. The
+window-only probe has its own loop/validation overhead, so subtraction is an
+estimate rather than an exact cost breakdown. Host typed-array results do not
+prove the same operation is safe or fast while the native window is redirected.
+Use the portable Lua benchmark separately to assess the full compatibility path.
+
 ## FTP
 
 ```sh

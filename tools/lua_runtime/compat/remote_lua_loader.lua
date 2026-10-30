@@ -17,6 +17,8 @@ local run_rop_batch = __compat_run_rop_batch
 __compat_run_rop_batch = nil
 local core_shared_prefetch = __compat_shared_prefetch
 __compat_shared_prefetch = nil
+local host_sleep = __compat_host_sleep
+__compat_host_sleep = nil
 
 PLATFORM = "ps5"
 game_name = "WebKit"
@@ -64,12 +66,11 @@ SIGSEGV = 11
 SA_SIGINFO = 0x4
 LIBKERNEL_HANDLE = 0x2001
 
-uint64 = setmetatable({unpack = unpack64}, {__call = function(_,v)
-    if type(v) == "table" then
-        return (core_uint64(v.h) << 32) | core_uint64(v.l)
-    end
-    return core_uint64(v)
-end})
+local construct_uint64 = __compat_make_uint64_constructor(function(v)
+    return (core_uint64(v.h) << 32) | core_uint64(v.l)
+end)
+__compat_make_uint64_constructor = nil
+uint64 = setmetatable({unpack = unpack64}, {__call = construct_uint64})
 function is_uint64(v) return type(v) == "userdata" end
 function ub8(v) return uint64(v):pack() end
 function hex(v) return tostring(uint64(v)) end
@@ -116,17 +117,20 @@ function errorf(fmt, ...) error(string.format(fmt, ...), 2) end
 
 for _, pair in ipairs({{"byte",8},{"word",16},{"dword",32},{"qword",64}}) do
     local name,bits = pair[1],pair[2]
-    memory["read_"..name] = function(addr) return uint64(core_memory["read"..bits](addr)) end
+    -- Boxed reads are installed directly by the JS profile.
     memory["write_"..name] = core_memory["write"..bits]
 end
 local function number(n)
     if is_uint64(n) then return n:tonumber() end
     return n
 end
-memory.read_buffer = function(p,n) return core_memory.read_buffer(p,number(n)) end
+memory.read_buffer = __compat_buffer_reader(function(p,n)
+    return core_memory.read_buffer(p,number(n))
+end)
+__compat_buffer_reader = nil
 -- The bridge accepts at most 64 KiB per write_buffer call, so a large string
 -- (a prefetched elf is 385 KiB) is copied in pieces.
-memory.write_buffer = function(p, s)
+memory.write_buffer = __compat_buffer_writer(function(p, s)
     local text = tostring(s)
     local base = uint64(p)
     -- Most writes fit in one bridge call. Avoid slicing the string, advancing
@@ -145,7 +149,8 @@ memory.write_buffer = function(p, s)
         rem = rem - chunk
     end
     return base
-end
+end)
+__compat_buffer_writer = nil
 function memory.read_null_terminated_string(addr)
     local p = uint64(addr)
     local result = ""
@@ -589,6 +594,12 @@ function sleep(val, unit)
     local mult = ({ ns = 1, us = 1e3, ms = 1e6, s = 1e9 })[unit]
     if not mult then error("unsupported time unit: " .. tostring(unit)) end
     local total_ns = math.floor(val * mult)
+    if host_sleep then
+        -- Yield to a JS timer instead of blocking a syscall on the hijacked
+        -- worker chain; blocking there trips the PS5 stack check (0xa0020307).
+        host_sleep(total_ns)
+        return
+    end
     local ts = ensure_time_scratch()
     core_memory.write64(ts, math.floor(total_ns / 1e9))
     core_memory.write64(ts + 8, total_ns % 1000000000)

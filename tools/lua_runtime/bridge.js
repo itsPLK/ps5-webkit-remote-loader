@@ -5,15 +5,23 @@ const META = str('wkrl.uint64');
 function install(L, api, { onResume = () => {} } = {}) {
   let pending = null;
   let completion;
+  let pushMetatable, metatableIdentity;
   function value(state, index) {
-    const boxed = lauxlib.luaL_testudata(state, index, META);
-    if (boxed) return boxed.value;
-    if (lua.lua_type(state, index) === lua.LUA_TSTRING) {
+    const type = lua.lua_type(state, index);
+    if (type === lua.LUA_TUSERDATA) {
+      const boxed = lua.lua_touserdata(state, index);
+      if (lua.lua_getmetatable(state, index)) {
+        const matches = lua.lua_topointer(state, -1) === metatableIdentity;
+        lua.lua_pop(state, 1);
+        if (matches) return boxed.value;
+      }
+    }
+    if (type === lua.LUA_TSTRING) {
       const text = to_jsstring(lua.lua_tolstring(state, index));
       if (!/^(?:0x[0-9a-f]+|[+-]?[0-9]+)$/i.test(text)) throw Error('invalid uint64 string');
       return BigInt(text) & MASK;
     }
-    if (lua.lua_type(state, index) === lua.LUA_TNUMBER) {
+    if (type === lua.LUA_TNUMBER) {
       const n = lua.lua_tonumber(state, index);
       if (!Number.isSafeInteger(n)) throw Error('uint64 requires an exact integer or string');
       return BigInt(n) & MASK;
@@ -22,7 +30,8 @@ function install(L, api, { onResume = () => {} } = {}) {
   }
   function push(state, n) {
     lua.lua_newuserdata(state, 0).value = n & MASK;
-    lauxlib.luaL_setmetatable(state, META);
+    pushMetatable(state);
+    lua.lua_setmetatable(state, -2);
   }
   function bind(state, fn) {
     lua.lua_pushcfunction(state, s => {
@@ -31,6 +40,10 @@ function install(L, api, { onResume = () => {} } = {}) {
     });
   }
   lauxlib.luaL_newmetatable(L, META);
+  // State-local proxies also work in that state's child coroutines. Compare the
+  // actual metatable identity without a registry lookup for every operand.
+  pushMetatable = lua.lua_toproxy(L, -1);
+  metatableIdentity = lua.lua_topointer(L, -1);
   function shift(a, b) {
     b = BigInt.asIntN(64, b);
     if (b >= WIDTH || b <= -WIDTH) return ZERO;
@@ -61,7 +74,7 @@ function install(L, api, { onResume = () => {} } = {}) {
   function native(n) {
     return new api.int64(Number(n & BigInt('0xffffffff')), Number(n >> BigInt(32)));
   }
-  require('./memory')(L, api, { value, push, bind, native });
+  const memoryBindings = require('./memory')(L, api, { value, push, bind, native });
   function call(s, syscall) {
     if (s !== L) return lauxlib.luaL_error(s,str('native calls require the main Lua coroutine'));
     const count = lua.lua_gettop(s);
@@ -113,7 +126,7 @@ function install(L, api, { onResume = () => {} } = {}) {
     return status;
   }
   resume.suspend = suspend;
-  resume.capabilities = { value, push, bind, native };
+  resume.capabilities = { value, push, bind, native, ...memoryBindings };
   return resume;
 }
 module.exports = { install };

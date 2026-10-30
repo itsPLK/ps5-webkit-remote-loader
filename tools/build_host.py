@@ -61,6 +61,12 @@ def should_include(rel_path):
 
 def build_zip(page=None, version=None, build_time="dev"):
     root = repo_root()
+    if page is None:
+        subprocess.run(
+            [sys.executable, os.path.join(root, "tools", "lua_runtime", "build_runtime.py")],
+            cwd=root,
+            check=True,
+        )
     archive = io.BytesIO()
     file_map = {}
 

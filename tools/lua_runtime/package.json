@@ -1,0 +1,9 @@
+{
+  "name": "wkrl-lua-runtime",
+  "private": true,
+  "version": "0.0.0",
+  "engines": { "node": ">=18" },
+  "scripts": { "build": "node build.js", "test": "node test.js && node routing_test.mjs" },
+  "dependencies": { "fengari": "0.1.4" },
+  "devDependencies": { "esbuild": "0.25.12" }
+}

@@ -592,6 +592,14 @@ def main(argv=None):
         bad("every server is disabled, nothing to do.")
         return 1
 
+    if not EMBEDDED_ZIP_B64:
+        runtime_builder = os.path.join(REPO_ROOT, "tools", "lua_runtime", "build_runtime.py")
+        try:
+            subprocess.run([sys.executable, runtime_builder], cwd=REPO_ROOT, check=True)
+        except (OSError, subprocess.CalledProcessError):
+            bad("Could not build the Lua runtime.")
+            return 1
+
     ip = args.ip or detect_local_ip()
 
     width = 52

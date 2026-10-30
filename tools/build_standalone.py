@@ -926,6 +926,11 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
     payloads = load_payloads(args.payloads)
+    subprocess.run(
+        [sys.executable, os.path.join(HERE, "lua_runtime", "build_runtime.py")],
+        cwd=ROOT,
+        check=True,
+    )
 
     embedded_files = {}
     elfldr_url = None

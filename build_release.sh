@@ -21,6 +21,9 @@ IMAGE_NAME="ps5-webkit-autoloader-sdk"
 
 echo "=== Building PS5 WebKit Remote Loader v$VERSION ==="
 
+# Build the ignored browser runtime before packaging the frontend.
+python3 tools/lua_runtime/build_runtime.py
+
 # 2. Clean up previous versioned artifacts
 rm -f webkit-remote-loader-installer_v*.elf webkit-remote-loader-host_v*.py
 echo "[*] Cleaned old versioned artifacts"

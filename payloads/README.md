@@ -11,6 +11,7 @@ See [docs/API.md](../docs/API.md) for the payload authoring API reference.
 | Payload | Purpose | Arguments |
 |---|---|---|
 | [hello_world.js](hello_world.js) | Loader round trip | None |
+| [lua_loader.js](lua_loader.js) | Pure-JS Lua 5.3 smoke test | Optional Lua source string; defaults to `print(1 + 1)` |
 | [notify.js](notify.js) | On-screen notification | Message text |
 | [sysinfo.js](sysinfo.js) | Credentials, system information, directories | Directory paths |
 | [ps.js](ps.js) | Process and thread list | Filter, `pid=N`, `uid=N`, `sort=KEY`, `desc`, `limit=N`, `json`, `help` |
@@ -20,6 +21,7 @@ See [docs/API.md](../docs/API.md) for the payload authoring API reference.
 | [klog.js](klog.js) | Read `/dev/klog` | `follow`, `timeout=N`, `sec=N`, `grep=TEXT`, `filter=TEXT`, `raw` |
 | [relapse.js](relapse.js) | Relapse kernel exploit (FW 7.00–13.60, except 9.05) | `map`, `pipes`, `spawn` (default) |
 | [poops.js](poops.js) | Poops kernel exploit (FW 7.00–12.00) ladder | See below |
+
 
 ## FTP
 

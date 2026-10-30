@@ -9,6 +9,8 @@ return async function (api) {
 };
 ```
 
+Lua payloads with a `--!lua` first line use the Lua runtime instead.
+
 ## API Reference
 
 | Member | Purpose |

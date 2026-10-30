@@ -9,7 +9,8 @@ Inspired by [remote_lua_loader](https://github.com/n0llptr/remote_lua_loader) an
 ## Setup
 
 Run the PC host from a checkout or use the bundled Python script / Windows
-executable from a release:
+executable from a release. A source checkout builds the Lua runtime bundle on
+first use and requires Node.js 18+ and npm; release builds include the bundle.
 
 ```sh
 sudo python3 host.py
@@ -32,6 +33,10 @@ python3 tools/send.py <PS5_IP> 9027 --status
 ```
 
 See [payloads/README.md](payloads/README.md) for bundled payloads and arguments.
+
+## LuaK1t
+
+The loader includes LuaK1t, a JavaScript-hosted Lua environment.
 
 ## Payload API
 

@@ -25,3 +25,7 @@ build/
 # Local klog/payload captures from console runs (see RELAPSE-INVESTIGATION.md).
 # These are per-run diagnostics, not repo content, and several are large.
 logs/
+
+# Lua runtime build dependencies
+/tools/lua_runtime/node_modules/
+/src/lua-vm.js

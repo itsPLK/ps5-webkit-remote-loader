@@ -197,7 +197,14 @@ export async function executePayload({ code, size, api, log, say, servedCount })
   const startTime = Date.now();
   let failure = null;
   try {
-    const entry = runner(`(async function () {\n${code}\n//# sourceURL=payload.js\n})`);
+    const isLua = /^(?:\uFEFF)?--(?:!lua|lua)(?:\r?\n|$)/.test(code);
+    let entry;
+    if (isLua) {
+      const { run } = await import("./lua-vm.js");
+      entry = () => run(api, code.replace(/^\uFEFF/, ""), "=payload.lua");
+    } else {
+      entry = runner(`(async function () {\n${code}\n//# sourceURL=payload.js\n})`);
+    }
     await log("");
 
     let result = await entry();

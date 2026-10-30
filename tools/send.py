@@ -181,18 +181,67 @@ def build_frame(data, args):
     return bytes(out)
 
 
+def bundle_lua_requires(path, data):
+    """Inline sibling Lua modules referenced via require("mod") or require "mod"."""
+    base_dir = os.path.dirname(os.path.abspath(path))
+    if not base_dir:
+        return data
+    text = data.decode("utf-8", "replace")
+    req_re = re.compile(r"""(?<!\w)require\s*(?:\(\s*["']([^"']+)["']\s*\)|["']([^"']+)["'])""")
+    visited = set()
+    preloaded = []
+
+    def collect(src, cur_dir):
+        for m in req_re.finditer(src):
+            mod = m.group(1) or m.group(2)
+            if not mod or mod in visited:
+                continue
+            rel = mod.replace(".", os.sep) + ".lua"
+            cand = os.path.join(cur_dir, rel)
+            if not os.path.isfile(cand):
+                cand = os.path.join(base_dir, rel)
+            if os.path.isfile(cand):
+                visited.add(mod)
+                with open(cand, "rb") as mf:
+                    mod_src = mf.read().decode("utf-8", "replace")
+                collect(mod_src, os.path.dirname(os.path.abspath(cand)))
+                preloaded.append((mod, mod_src))
+
+    collect(text, base_dir)
+    if not preloaded:
+        return data
+
+    parts = ["package = package or {}; package.preload = package.preload or {}\n"]
+    for mod, mod_src in preloaded:
+        eq = "="
+        while f"[{eq}[" in mod_src or f"]{eq}]" in mod_src:
+            eq += "="
+        parts.append(
+            f'package.preload["{mod}"] = assert((load or loadstring)([{eq}[\n{mod_src}\n]{eq}], "@{mod}.lua"))\n'
+        )
+    parts.append(text)
+    return "".join(parts).encode("utf-8")
+
+
 def send_file(host, port, path, raw=False, save_dir=None, args=None):
     with open(path, "rb") as f:
         data = f.read()
+    arg_list = list(args or [])
+    if path.lower().endswith(".lua"):
+        if not data.startswith((b"--!lua", b"--lua", b"\xef\xbb\xbf--!lua", b"\xef\xbb\xbf--lua")):
+            if "lua=1" not in arg_list and "compat=remote_lua_loader" not in arg_list:
+                arg_list.append("lua=1")
+        if "compat=remote_lua_loader" in arg_list:
+            data = bundle_lua_requires(path, data)
     if len(data) > 512 * 1024:
         print(paint(f"[-] payload is {len(data)} bytes, over the 512 KiB limit", 31))
         return 1
 
-    frame = build_frame(data, args or [])
+    frame = build_frame(data, arg_list)
 
     with socket.create_connection((host, port), timeout=30) as sock:
         sock.sendall(frame)
-        extra = f" with {len(args)} arg(s)" if args else ""
+        extra = f" with {len(arg_list)} arg(s)" if arg_list else ""
         print(paint(f"[+] sent {len(data)} bytes from {path} to "
                     f"{host}:{port}{extra}", 32), flush=True)
         receive(sock, raw=raw, save_dir=save_dir)

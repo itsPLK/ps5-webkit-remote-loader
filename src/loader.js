@@ -197,7 +197,10 @@ export async function executePayload({ code, size, api, log, say, servedCount })
   const startTime = Date.now();
   let failure = null;
   try {
-    const isLua = /^(?:\uFEFF)?--(?:!lua|lua)(?:\r?\n|$)/.test(code);
+    const argsList = Array.isArray(api.args) ? api.args : [];
+    const isLua = /^(?:\uFEFF)?--(?:!lua|lua)(?:\r?\n|$)/.test(code) ||
+      argsList.includes("compat=remote_lua_loader") ||
+      argsList.includes("lua=1");
     let entry;
     if (isLua) {
       const { run } = await import("./lua-vm.js");

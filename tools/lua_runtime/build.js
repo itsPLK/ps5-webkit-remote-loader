@@ -8,6 +8,7 @@ const license = ['fengari', 'sprintf-js'].map(name =>
 const result = esbuild.buildSync({
   entryPoints: [path.join(__dirname, 'entry.js')],
   bundle: true,
+  loader: { '.lua': 'text' },
   platform: 'browser',
   format: 'iife',
   globalName: 'WkrlLua',

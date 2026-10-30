@@ -22,6 +22,8 @@ test: lua-runtime
 	node tools/standalone_test.js
 	node tools/lua_runtime/test.js
 	node tools/lua_runtime/routing_test.mjs
+	node tools/lua_runtime/compat_test.mjs
+	node tools/lua_runtime/service_test.mjs
 	$(PYTHON) tools/build_assets_test.py
 	$(PYTHON) tools/build_customization_test.py
 

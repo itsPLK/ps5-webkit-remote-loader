@@ -2,7 +2,7 @@ const { lua, lauxlib, to_luastring: str, to_jsstring } = require('fengari');
 const ZERO = BigInt(0), WIDTH = BigInt(64), MASK = (BigInt(1) << WIDTH) - BigInt(1);
 const META = str('wkrl.uint64');
 
-function install(L, api) {
+function install(L, api, { onResume = () => {} } = {}) {
   let pending = null;
   let completion;
   function value(state, index) {
@@ -74,17 +74,23 @@ function install(L, api) {
       args = [];
       for (let i=2;i<=count;i++) args.push(native(value(s,i)));
     } catch(e) { return lauxlib.luaL_error(s,str(e.message)); }
-    pending = () => api.chain[syscall ? 'syscall' : 'call'](target,...args);
+    return suspend(s, () => api.chain[syscall ? 'syscall' : 'call'](target,...args), (state,result) => {
+      push(state,(BigInt(result.hi >>> 0) << BigInt(32)) | BigInt(result.low >>> 0));
+      return 1;
+    });
+  }
+  function suspend(s, invoke, finish) {
+    if (s !== L) return lauxlib.luaL_error(s,str('host operations require the main Lua coroutine'));
+    pending = invoke;
     return lua.lua_yieldk(s,0,0,state => {
       if (completion.error) {
         lua.lua_pushstring(state,str(String(completion.error.message || completion.error)));
         return lua.lua_error(state);
       }
-      const result = completion.result;
-      push(state,(BigInt(result.hi >>> 0) << BigInt(32)) | BigInt(result.low >>> 0));
-      return 1;
+      return finish(state,completion.result);
     });
   }
+
   lua.lua_pushcfunction(L,s=>call(s,false));
   lua.lua_setglobal(L,str('fcall'));
   lua.lua_newtable(L);
@@ -93,7 +99,7 @@ function install(L, api) {
   lua.lua_pushcfunction(L,s=>{ lua.lua_pushinteger(s,20); lua.lua_insert(s,1); return call(s,true); });
   lua.lua_setfield(L,-2,str('getpid'));
   lua.lua_setglobal(L,str('syscall'));
-  return async function resume() {
+  async function resume() {
     let status = lua.lua_resume(L,null,0);
     while (status === lua.LUA_YIELD) {
       if (!pending) throw Error('unexpected Lua yield');
@@ -101,9 +107,13 @@ function install(L, api) {
       pending = null;
       try { completion = {result: await invoke()}; }
       catch(error) { completion = {error}; }
+      onResume();
       status = lua.lua_resume(L,null,0);
     }
     return status;
-  };
+  }
+  resume.suspend = suspend;
+  resume.capabilities = { value, push, bind, native };
+  return resume;
 }
 module.exports = { install };

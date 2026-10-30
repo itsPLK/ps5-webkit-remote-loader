@@ -142,7 +142,8 @@ export async function acceptOnce(p, chain, log, listener, timeoutMs) {
 
   chain.clear();
   chain.add_syscall_ret(slot, CALL.ACCEPT, listener.sock, listener.peer, listener.addrlen);
-  p.launch_chain_detached(chain);
+  // The launch is async now: it gates on the worker being parked before arming.
+  await p.launch_chain_detached(chain);
 
   return await waitDetached(p, chain, log, slot, timeoutMs);
 }

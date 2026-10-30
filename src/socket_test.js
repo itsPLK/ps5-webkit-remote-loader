@@ -143,7 +143,8 @@ export async function runSocketTest(p, chain, log) {
   p.write4(addrlen, 16);
   chain.clear();
   chain.add_syscall_ret(accSlot, CALL.ACCEPT, sock, peer, addrlen);
-  p.launch_chain_detached(chain);
+  // The launch is async now: it gates on the worker being parked before arming.
+  await p.launch_chain_detached(chain);
 
   const deadline = Date.now() + ACCEPT_WAIT_MS;
   let client = null;

@@ -204,7 +204,8 @@ async function prepareRop(p) {
   // Put the worker's real return address back into its parked slot. The hook is
   // only valid while a chain is staged; leaving it installed while idle means a
   // spurious wake pivots RSP into a cleared (zeroed) chain buffer and executes
-  // garbage on the worker thread (SIGSEGV / console freeze). The next launch re-arms it.
+  // garbage on the worker thread (SIGSEGV / console freeze, see
+  // the worker's cleared chain buffer). The next launch re-arms it.
   function restoreHook() {
     p.write8(returnAddress, originalReturnAddress);
   }

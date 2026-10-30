@@ -143,9 +143,9 @@ module.exports = function install(L, api, cap) {
   lua.lua_setglobal(L, str('__compat_untrack_region'));
   // Sleep without routing nanosleep through the hijacked worker chain:
   // syscalls executed with RSP inside the chain buffer fail the PS5 user-stack
-  // check whenever they actually block (SYSTEM_STACK_CHECK_FAILURE 0xa0020307).
-  // A JS timer yield suspends the Lua coroutine instead and leaves the worker
-  // parked. Opt out with the payload arg `sleep=nanosleep`.
+  // check whenever they actually block (SYSTEM_STACK_CHECK_FAILURE 0xa0020307,
+  // on blocking calls). A JS timer yield suspends the Lua coroutine and leaves
+  // the worker parked. Opt out with the payload arg `sleep=nanosleep`.
   if (!((api.args || []).includes('sleep=nanosleep'))) {
     // Do not use bind() here: Fengari implements lua_yieldk by throwing its
     // internal yield sentinel, and bind() catches every throw as a Lua error.

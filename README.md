@@ -36,7 +36,9 @@ See [payloads/README.md](payloads/README.md) for bundled payloads and arguments.
 
 ## LuaK1t
 
-The loader includes LuaK1t, a JavaScript-hosted Lua environment.
+The loader includes LuaK1t, a JavaScript-hosted Lua environment. See the
+[Lua compatibility guide](docs/LUA_COMPATIBILITY.md) for runtime selection,
+core bindings, and the optional `remote_lua_loader` profile.
 
 ## Payload API
 

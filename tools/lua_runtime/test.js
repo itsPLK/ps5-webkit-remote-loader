@@ -3,20 +3,23 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-// Evaluate the actual shipped payload without Node globals, Wasm, or a DOM.
-const code = fs.readFileSync(path.resolve(__dirname, '../../payloads/lua_loader.js'), 'utf8');
+// Evaluate the generated runtime module without Node globals, Wasm, or a DOM.
+const code = fs.readFileSync(path.resolve(__dirname, '../../src/lua-vm.js'), 'utf8');
+const exportLine = '\nexport async function run(api, source, name) { return WkrlLua.run(api, source, name); }\n';
+assert(code.endsWith(exportLine), 'expected the generated Lua runtime module');
 const context = vm.createContext({ TextDecoder, TextEncoder, WebAssembly: undefined });
-const entry = vm.runInContext('(function () {\n' + code + '\n})()', context);
+vm.runInContext(code.slice(0, -exportLine.length), context);
+const runLua = context.WkrlLua.run;
 async function run(source) {
   const lines = [];
   let active = false;
-  await entry({ args: source === undefined ? [] : [source], log: async line => {
+  await runLua({ args: [], log: async line => {
     assert.equal(active, false, 'logs must be awaited');
     active = true;
     await Promise.resolve();
     lines.push(line);
     active = false;
-  } });
+  } }, source === undefined ? 'print(1 + 1)' : source, '=payload.lua');
   return lines;
 }
 (async () => {
@@ -33,10 +36,11 @@ async function run(source) {
   await assert.rejects(run('while true do end'), /instruction budget/);
   await assert.rejects(run('print(string.rep("x", 1048577))'), /output budget/);
   const lines = [];
-  await assert.rejects(entry({ args: ['print("before"); error("after")'],
-    log: async line => lines.push(line) }), /after/);
+  await assert.rejects(runLua({ args: [], log: async line => lines.push(line) },
+    'print("before"); error("after")', '=payload.lua'), /after/);
   assert.deepEqual(lines, ['before']);
-  await assert.rejects(entry({ args: [], log: async () => { throw Error('log failed'); } }), /log failed/);
+  await assert.rejects(runLua({ args: [], log: async () => { throw Error('log failed'); } },
+    'print("log failure")', '=payload.lua'), /log failed/);
   assert.deepEqual(await run(), ['2']);
   const calls = [], nativeLines = [];
   function Int64(low, hi) { this.low = low; this.hi = hi; }
@@ -59,7 +63,7 @@ async function run(source) {
       },
     },
   };
-  async function nativeRun(source) { await entry({...nativeApi, args:[source]}); }
+  async function nativeRun(source) { await runLua({...nativeApi, args:[]}, source, '=payload.lua'); }
   await nativeRun(`
     assert(tostring(uint64("0xffffffffffffffff") + 1) == "0x0")
     assert(tostring(uint64(0) - 1) == "0xffffffffffffffff")
@@ -165,5 +169,5 @@ async function run(source) {
   await assert.rejects(nativeRun('memory.read_buffer(4, 4)'), /guarded bulk read/);
   nativeApi.p.read1 = () => { throw Error('guarded read'); };
   await nativeRun('local ok, err = pcall(memory.read8, 1); assert(not ok and string.find(err, "guarded read"))');
-  console.log('Lua payload tests passed');
+  console.log('Lua runtime tests passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -9,7 +9,8 @@ return async function (api) {
 };
 ```
 
-Lua payloads with a `--!lua` first line use the Lua runtime instead.
+Lua payloads with a `--!lua` first line use the Lua runtime instead. See the
+[Lua compatibility guide](LUA_COMPATIBILITY.md) for bindings and usage.
 
 ## API Reference
 

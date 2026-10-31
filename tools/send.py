@@ -186,7 +186,8 @@ def bundle_lua_requires(path, data):
     base_dir = os.path.dirname(os.path.abspath(path))
     if not base_dir:
         return data
-    text = data.decode("utf-8", "replace")
+    is_bytes = isinstance(data, (bytes, bytearray))
+    text = data.decode("utf-8", "replace") if is_bytes else data
     req_re = re.compile(r"""(?<!\w)require\s*(?:\(\s*["']([^"']+)["']\s*\)|["']([^"']+)["'])""")
     visited = set()
     preloaded = []
@@ -220,7 +221,8 @@ def bundle_lua_requires(path, data):
             f'package.preload["{mod}"] = assert((load or loadstring)([{eq}[\n{mod_src}\n]{eq}], "@{mod}.lua"))\n'
         )
     parts.append(text)
-    return "".join(parts).encode("utf-8")
+    res = "".join(parts)
+    return res.encode("utf-8") if is_bytes else res
 
 
 def send_file(host, port, path, raw=False, save_dir=None, args=None):
@@ -228,8 +230,11 @@ def send_file(host, port, path, raw=False, save_dir=None, args=None):
         data = f.read()
     arg_list = list(args or [])
     if path.lower().endswith(".lua"):
-        if not data.startswith((b"--!lua", b"--lua", b"\xef\xbb\xbf--!lua", b"\xef\xbb\xbf--lua")):
-            if "lua=1" not in arg_list and "compat=remote_lua_loader" not in arg_list:
+        has_compat = any(a.startswith("compat=") for a in arg_list)
+        if not has_compat:
+            arg_list.append("compat=remote_lua_loader")
+        elif "lua=1" not in arg_list and not any(a == "compat=remote_lua_loader" for a in arg_list):
+            if not data.startswith((b"--!lua", b"--lua", b"\xef\xbb\xbf--!lua", b"\xef\xbb\xbf--lua")):
                 arg_list.append("lua=1")
         if "compat=remote_lua_loader" in arg_list:
             data = bundle_lua_requires(path, data)

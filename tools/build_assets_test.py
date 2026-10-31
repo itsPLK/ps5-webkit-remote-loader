@@ -56,6 +56,17 @@ class EmbeddedAssetsTest(unittest.TestCase):
             cfg = standalone.extract_json_assignment(html, 'LOADER_CONFIG')
             self.assertEqual(cfg, {'ELFLDR_ELF': custom_url})
 
+    def test_lua_payload_default_compat_arg(self):
+        p_default = standalone.Payload('payloads/lua/compat_smoke.lua', [])
+        self.assertIn('compat=remote_lua_loader', p_default.args)
+
+        p_custom = standalone.Payload('payloads/lua/compat_smoke.lua', ['compat=none'])
+        self.assertNotIn('compat=remote_lua_loader', p_custom.args)
+        self.assertEqual(p_custom.args, ['compat=none'])
+
+        p_js = standalone.Payload('payloads/hello_world.js', [])
+        self.assertNotIn('compat=remote_lua_loader', p_js.args)
+
     def test_single_page_host(self):
         with tempfile.TemporaryDirectory() as directory:
             page = os.path.join(directory, 'page.html')

@@ -253,9 +253,15 @@ class Payload(object):
         with open(repo_path(path), "r", encoding="utf-8") as f:
             self.source = f.read()
         if path.lower().endswith(".lua"):
-            if not self.source.startswith(("--!lua", "--lua", "\ufeff--!lua", "\ufeff--lua")):
-                if "lua=1" not in self.args and "compat=remote_lua_loader" not in self.args:
+            has_compat = any(a.startswith("compat=") for a in self.args)
+            if not has_compat:
+                self.args.append("compat=remote_lua_loader")
+            elif "lua=1" not in self.args and not any(a == "compat=remote_lua_loader" for a in self.args):
+                if not self.source.startswith(("--!lua", "--lua", "\ufeff--!lua", "\ufeff--lua")):
                     self.args.append("lua=1")
+            if "compat=remote_lua_loader" in self.args:
+                from send import bundle_lua_requires
+                self.source = bundle_lua_requires(repo_path(path), self.source)
 
     @property
     def byte_length(self):

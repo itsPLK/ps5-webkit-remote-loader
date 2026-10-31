@@ -14,21 +14,21 @@ Send a Lua file with the project sender:
 python3 tools/send.py <PS5_IP> 9027 payloads/lua/memory_smoke.lua
 ```
 
-`tools/send.py` adds `lua=1` for `.lua` files. Other clients can select Lua by
-putting `--!lua` or `--lua` on the first line, or by passing `lua=1`. The
-compatibility profile is opt-in:
+`tools/send.py` and `tools/build_standalone.py` add `compat=remote_lua_loader`
+by default for `.lua` files (unless an explicit `compat=` argument, such as
+`compat=none`, is specified). The compatibility argument selects the Lua
+runtime and enables the `remote_lua_loader` profile without requiring an extra
+`lua=1` argument. Other clients can select Lua by putting `--!lua` or `--lua`
+on the first line, or by passing `compat=remote_lua_loader` or `lua=1`.
 
 ```sh
-python3 tools/send.py <PS5_IP> 9027 payloads/lua/compat_smoke.lua \
-  --arg compat=remote_lua_loader
+python3 tools/send.py <PS5_IP> 9027 payloads/lua/compat_smoke.lua
 ```
 
-The compatibility argument also selects the Lua runtime, so a separate
-`lua=1` argument is unnecessary. Add `--arg service=1` for a long-running
-WebKit payload. This disables the loader's payload deadline after compilation
-and streams `print` output while the script runs. `service=1` is a WebKit loader
-option; it is not needed when running the same script in the original
-`remote_lua_loader` environment.
+Add `--arg service=1` for a long-running WebKit payload. This disables the
+loader's payload deadline after compilation and streams `print` output while
+the script runs. `service=1` is a WebKit loader option; it is not needed when
+running the same script in the original `remote_lua_loader` environment.
 
 Each invocation gets a fresh Lua state. Lua payloads run sequentially with
 other payloads. A Lua error is reported as a payload failure; a later payload
@@ -144,24 +144,24 @@ module names and does not load arbitrary files.
 
 ## Examples
 
-Core Lua smoke test:
+Compatibility smoke test (default profile):
 
 ```sh
-python3 tools/send.py <PS5_IP> 9027 payloads/lua/memory_smoke.lua
+python3 tools/send.py <PS5_IP> 9027 payloads/lua/compat_smoke.lua
 ```
 
-Compatibility smoke test:
+Core Lua smoke test (explicitly opting out of compatibility profile):
 
 ```sh
-python3 tools/send.py <PS5_IP> 9027 payloads/lua/compat_smoke.lua \
-  --arg compat=remote_lua_loader
+python3 tools/send.py <PS5_IP> 9027 payloads/lua/memory_smoke.lua \
+  --arg compat=none
 ```
 
 Long-running FTP service:
 
 ```sh
 python3 tools/send.py <PS5_IP> 9027 payloads/lua/ftp_server.lua \
-  --arg compat=remote_lua_loader --arg service=1
+  --arg service=1
 ```
 
 `src/lua-vm.js` is generated and ignored by Git. The source host and page

@@ -390,23 +390,19 @@ class GuideHandler(SimpleHTTPRequestHandler):
         return io.BytesIO(data)
 
 
-class _ThreadingHTTPServer(ThreadingHTTPServer):
-    """Like ThreadingHTTPServer, but perform TLS handshakes in client threads.
-
-    Wrapping the listening socket in TLS performs the handshake inside
-    accept(). A single connection that never completes its handshake blocks
-    the accept loop, prevents new requests, and hangs shutdown().
-    """
+class GuideHTTPServer(ThreadingHTTPServer):
+    """Keep TLS handshakes off the accept loop and bound idle handshake time."""
 
     ssl_context = None
+    handshake_timeout = 10
 
     def process_request_thread(self, request, client_address):
-        # process_request() runs in the accept thread; process_request_thread()
-        # runs in the new client thread, where the handshake belongs.
-        ctx = self.ssl_context
-        if ctx is not None:
+        if self.ssl_context is not None:
+            timeout = request.gettimeout()
             try:
-                request = ctx.wrap_socket(request, server_side=True)
+                request.settimeout(self.handshake_timeout)
+                request = self.ssl_context.wrap_socket(request, server_side=True)
+                request.settimeout(timeout)
             except OSError:
                 self.shutdown_request(request)
                 return
@@ -415,7 +411,7 @@ class _ThreadingHTTPServer(ThreadingHTTPServer):
 
 def build_server(host, port, allowed_host, status, quiet):
     handler = lambda *a, **kw: GuideHandler(*a, allowed_host=allowed_host, **kw)
-    httpd = _ThreadingHTTPServer((host, port), handler)
+    httpd = GuideHTTPServer((host, port), handler)
     httpd.daemon_threads = True
     httpd.status = status
     httpd.quiet = quiet
@@ -487,15 +483,23 @@ class LoggingSSLContext(ssl.SSLContext):
     def wrap_socket(self, sock, server_side=False, do_handshake_on_connect=True,
                     suppress_ragged_eofs=True, server_hostname=None,
                     session=None):
+        # wrap_socket takes ownership and may close/detach sock on failure.
+        try:
+            peer = sock.getpeername()[0]
+        except OSError:
+            peer = "?"
         try:
             wrapped = super().wrap_socket(
                 sock, server_side, do_handshake_on_connect, suppress_ragged_eofs,
                 server_hostname, session,
             )
-        except ssl.SSLError as exc:
-            peer = sock.getpeername() if hasattr(sock, "getpeername") else "?"
-            say(style(f"[TLS ] handshake FAILED from {peer[0] if peer != '?' else '?'}"
-                      f" -> {exc}", 31))
+        except OSError as exc:
+            # The console can reject our self-signed cert before retrying
+            # with the user's certificate exception. Keep this in debug logs.
+            if (getattr(exc, "reason", None) != "TLSV1_ALERT_UNKNOWN_CA"
+                    or getattr(self, "verbose", False)):
+                say(style(f"[TLS ] handshake FAILED from {peer}"
+                          f" -> {exc}", 31))
             raise
         try:
             peer = wrapped.getpeername()
@@ -703,6 +707,7 @@ def main(argv=None):
         key_file.close()
 
         ctx = LoggingSSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.verbose = args.verbose
         ctx.load_cert_chain(certfile=cert_file.name, keyfile=key_file.name)
         # An older WebKit may offer only legacy versions/ciphers. macOS ships
         # LibreSSL, which rejects OpenSSL's "@SECLEVEL" syntax outright, so try
@@ -717,8 +722,6 @@ def main(argv=None):
             ctx.minimum_version = ssl.TLSVersion.TLSv1
         except (ValueError, ssl.SSLError):
             pass  # LibreSSL here will not go below its own floor
-        # Keep the listening socket plain; perform each TLS handshake in
-        # _ThreadingHTTPServer.process_request_thread() in the client thread.
         httpsd.ssl_context = ctx
         # The cert is already loaded into the context, so leaking the temp file
         # is harmless if the OS still holds it open.

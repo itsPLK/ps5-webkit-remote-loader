@@ -140,7 +140,7 @@ function findPayloadLocation(e, code) {
   // 2. Check e.line and e.column (JavaScriptCore native properties on Error)
   if (typeof e?.line === "number" && e.line > 0) {
     const srcUrl = String(e.sourceURL || "");
-    if (!/loader\.js|site\.js|rop\.js|kexp\.js/i.test(srcUrl)) {
+    if (/(?:^|\/)payload\.js$/.test(srcUrl)) {
       const evalLine = e.line;
       const payloadLine = evalLine > 1 ? evalLine - 1 : evalLine;
       const snippet = (payloadLine >= 1 && payloadLine <= codeLines.length)
@@ -152,7 +152,7 @@ function findPayloadLocation(e, code) {
 
   // 3. Fallback: inspect function names in stack frames (e.g. JSC eval frames without file:line)
   for (const rawLine of stackLines) {
-    if (/loader\.js|site\.js|rop\.js|kexp\.js/i.test(rawLine)) continue;
+    if (/loader\.js|site\.js|rop\.js|kexp\.js|lua-vm\.js/i.test(rawLine)) continue;
     const fnMatch = rawLine.match(/^\s*(?:at\s+)?([a-zA-Z0-9_$]+)@/);
     if (fnMatch) {
       const fnName = fnMatch[1];

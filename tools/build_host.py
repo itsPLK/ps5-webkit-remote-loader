@@ -13,12 +13,12 @@ Usage:
 import argparse
 import base64
 import io
+import importlib.util
 import json
 import os
 import re
 import subprocess
 import sys
-import tempfile
 import zipfile
 
 from gen_version import get_version_info, sync_version_files
@@ -165,36 +165,15 @@ def build_zip(page=None, version=None, build_time="dev", source_dir=None):
 
 
 def generate_server_cert():
-    with tempfile.TemporaryDirectory(prefix="ps5-wkrl-") as tmpdir:
-        cert_path = os.path.join(tmpdir, "cert.pem")
-        key_path = os.path.join(tmpdir, "key.pem")
-        conf = os.path.join(tmpdir, "openssl.cnf")
-        with open(conf, "w") as f:
-            f.write(
-                "[req]\n"
-                "distinguished_name = dn\n"
-                "x509_extensions = ext\n"
-                "prompt = no\n"
-                "[dn]\n"
-                f"CN = {CERT_TARGET}\n"
-                "[ext]\n"
-                f"subjectAltName = DNS:{CERT_TARGET}, IP:127.0.0.1\n"
-                "basicConstraints = critical, CA:FALSE\n"
-            )
-        subprocess.run(
-            [
-                "openssl", "req", "-x509", "-newkey", "rsa:2048",
-                "-nodes", "-days", "3650", "-sha256",
-                "-keyout", key_path, "-out", cert_path,
-                "-config", conf,
-            ],
-            check=True,
-            capture_output=True,
-        )
-        with open(cert_path) as f:
-            cert = f.read()
-        with open(key_path) as f:
-            key = f.read()
+    # Share the standalone host's generator so both paths use the same
+    # 24-hour clock tolerance, while retaining the bundled 10-year lifetime.
+    spec = importlib.util.spec_from_file_location(
+        "guide_host", os.path.join(repo_root(), "host.py"))
+    host = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(host)
+    cert, key = host.make_cert(CERT_TARGET, validity_days=3650)
+    if cert is None:
+        raise RuntimeError("Could not generate the bundled TLS certificate (openssl required)")
     return cert, key
 
 

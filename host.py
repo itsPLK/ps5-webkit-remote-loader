@@ -420,7 +420,7 @@ def build_server(host, port, allowed_host, status, quiet):
 
 # --- TLS -------------------------------------------------------------------
 
-def make_cert(target):
+def make_cert(target, validity_days=825):
     """Self-signed cert for the spoofed hostname, via openssl.
 
     Includes a subjectAltName because CN-only certificates are rejected by
@@ -429,12 +429,18 @@ def make_cert(target):
 
     Returns (cert_pem, key_pem) or (None, None). A fresh pair is generated per
     run rather than committed, so there is no key to leak and no expiry to
-    manage. Pass --cert/--key to pin your own pair instead.
+    manage. Backdate validity by 24 hours to tolerate small clock differences.
+    Pass --cert/--key to pin your own pair instead.
     """
     with tempfile.TemporaryDirectory(prefix="ps5-wkl-") as tmp:
         cert_path = os.path.join(tmp, "cert.pem")
         key_path = os.path.join(tmp, "key.pem")
+        request_path = os.path.join(tmp, "request.pem")
         conf = os.path.join(tmp, "openssl.cnf")
+        with open(os.path.join(tmp, "index"), "w"):
+            pass
+        with open(os.path.join(tmp, "serial"), "w") as f:
+            f.write(os.urandom(16).hex() + "\n")
         with open(conf, "w") as f:
             f.write(
                 "[req]\n"
@@ -446,15 +452,40 @@ def make_cert(target):
                 "[ext]\n"
                 "subjectAltName = DNS:" + target + ", IP:127.0.0.1\n"
                 "basicConstraints = critical, CA:FALSE\n"
+                "[ca]\n"
+                "default_ca = local\n"
+                "[local]\n"
+                "database = index\n"
+                "serial = serial\n"
+                "new_certs_dir = .\n"
+                "default_md = sha256\n"
+                "policy = policy\n"
+                "x509_extensions = ext\n"
+                "[policy]\n"
+                "commonName = supplied\n"
             )
         try:
             subprocess.run(
                 [
-                    "openssl", "req", "-x509", "-newkey", "rsa:2048",
-                    "-nodes", "-days", "825", "-sha256",
-                    "-keyout", key_path, "-out", cert_path,
+                    "openssl", "req", "-new", "-newkey", "rsa:2048",
+                    "-nodes", "-sha256",
+                    "-keyout", key_path, "-out", request_path,
                     "-config", conf,
                 ],
+                check=True,
+                capture_output=True,
+            )
+            start = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
+            # ca -startdate works on older OpenSSL/LibreSSL versions too.
+            subprocess.run(
+                [
+                    "openssl", "ca", "-selfsign", "-batch", "-notext",
+                    "-config", conf, "-keyfile", key_path,
+                    "-in", request_path, "-out", cert_path,
+                    "-startdate", start.strftime("%Y%m%d%H%M%SZ"),
+                    "-days", str(validity_days),
+                ],
+                cwd=tmp,
                 check=True,
                 capture_output=True,
             )

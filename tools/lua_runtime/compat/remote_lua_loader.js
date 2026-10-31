@@ -2,6 +2,7 @@
 const {lua, lauxlib, to_luastring: str, luastring_eq} = require('fengari');
 const KEYS = {h: str('h'), l: str('l'), tonumber: str('tonumber'), pack: str('pack')};
 const { psluaLiterals } = require('../pslua_literals');
+const {pushOwnedBytes} = require('../owned_string');
 // The profile is loaded as text, so its own literals need the same double spelling
 // the payload gets: Fengari truncates 0x300000000 (sysctl name translation) to 0.
 const source = psluaLiterals(require('./remote_lua_loader.lua'));
@@ -300,8 +301,9 @@ module.exports = function install(L, api, cap) {
       if (!(kexp instanceof Uint8Array) || !(elf instanceof Uint8Array)) {
         return lauxlib.luaL_error(state, str('prefetchKexp returned no binary bytes'));
       }
-      lua.lua_pushlstring(state, kexp, kexp.length);
-      lua.lua_pushlstring(state, elf, elf.length);
+      // Copy cached bytes before transferring ownership to Fengari.
+      pushOwnedBytes(state, kexp.slice());
+      pushOwnedBytes(state, elf.slice());
       return 2;
     });
   });

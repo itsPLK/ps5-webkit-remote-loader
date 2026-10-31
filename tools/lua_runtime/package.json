@@ -5,7 +5,7 @@
   "scripts": {
     "build": "node build.js",
     "pretest": "npm run build",
-    "test": "node benchmark_report_test.js && node format_test.js && node owned_string_test.js && node bridge_value_test.js && node test.js && node routing_test.mjs && node compat_test.mjs && node service_test.mjs"
+    "test": "node benchmark_report_test.js && node format_test.js && node owned_string_test.js && node bridge_value_test.js && node relapse_poll_test.js && node relapse_aio_lookup_test.js && node test.js && node routing_test.mjs && node compat_test.mjs && node service_test.mjs"
   },
   "dependencies": { "fengari": "0.1.4" },
   "devDependencies": { "esbuild": "0.25.12" },

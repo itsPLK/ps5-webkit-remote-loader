@@ -3,6 +3,9 @@ local core_uint64, core_call = uint64, fcall
 local core_syscall = syscall.call
 local core_memory = {}
 for k,v in pairs(memory) do core_memory[k] = v end
+local core_write_buffer_large = core_memory.write_buffer_large
+core_memory.write_buffer_large = nil
+memory.write_buffer_large = nil
 local unpack64 = __compat_unpack
 __compat_unpack = nil
 local gmtime_fields = __compat_gmtime_fields
@@ -141,6 +144,10 @@ memory.write_buffer = __compat_buffer_writer(function(p, s)
         if #text > 0 then core_memory.write_buffer(base, text) end
         return base
     end
+    if core_write_buffer_large then
+        core_write_buffer_large(base, text)
+        return base
+    end
     local d = base
     local pos, rem = 1, #text
     while rem > 0 do
@@ -245,7 +252,7 @@ function memory.reset()
     current_capacity = 0
 end
 
-memory.alloc = function(n)
+local function allocate_memory(n, clear)
     local raw = number(n)
     if type(raw) ~= "number" or raw <= 0 or raw % 1 ~= 0 then
         error("memory.alloc requires a positive integer size")
@@ -254,7 +261,7 @@ memory.alloc = function(n)
     local list = free_blocks[sz]
     if list and #list > 0 then
         local ptr = table.remove(list)
-        zero_range(ptr, sz)
+        if clear then zero_range(ptr, sz) end
         alloc_sizes[tostring(ptr)] = sz
         return ptr
     end
@@ -266,7 +273,7 @@ memory.alloc = function(n)
                     local old_key = tostring(ring_order[idx])
                     if alloc_sizes[old_key] == sz then
                         local old = table.remove(ring_order, idx)
-                        zero_range(old, sz)
+                        if clear then zero_range(old, sz) end
                         ring_order[#ring_order + 1] = old
                         return old
                     end
@@ -290,7 +297,7 @@ memory.alloc = function(n)
     end
     local ptr = current_base + current_offset
     current_offset = current_offset + sz
-    zero_range(ptr, sz)
+    if clear then zero_range(ptr, sz) end
     alloc_sizes[tostring(ptr)] = sz
     alloc_counter = alloc_counter + 1
     if alloc_counter > RING_PINNED_COUNT and sz <= RING_MAX_SIZE then
@@ -301,6 +308,8 @@ memory.alloc = function(n)
     end
     return ptr
 end
+
+memory.alloc = function(n) return allocate_memory(n, true) end
 
 -- Bounded scratch slots are reused across sequential native calls. Native code
 -- must not retain these pointers. Payload-owned buffers are required for that.
@@ -510,6 +519,7 @@ function shared_size(name)
 end
 
 -- pslua's io for the savedata files the payload opens read-only.
+local IO_READ_CHUNK = 65536
 io = {
     open = function(path, mode)
         local flags = 0
@@ -520,9 +530,9 @@ io = {
         function handle:read(format)
             if format ~= "*a" and format ~= "*all" then return nil end
             local out = {}
-            local chunk = memory.alloc(4096)
+            local chunk = memory.alloc(IO_READ_CHUNK)
             while true do
-                local got = syscall.read(handle.fd, chunk, 4096):tonumber()
+                local got = syscall.read(handle.fd, chunk, IO_READ_CHUNK):tonumber()
                 if got <= 0 then break end
                 out[#out + 1] = memory.read_buffer(chunk, got)
             end
@@ -859,7 +869,8 @@ end
 lua = {
     resolve_value = function(v)
         if type(v) == "string" then
-            local buf = memory.alloc(#v + 1)
+            -- The string and trailing NUL overwrite every byte in this region.
+            local buf = allocate_memory(#v + 1, false)
             if #v > 0 then memory.write_buffer(buf, v) end
             memory.write_byte(buf + #v, 0)
             return buf
@@ -1026,14 +1037,17 @@ setmetatable(ropchain, {
 function ropchain:new(opt)
     opt = opt or {}
     local self = setmetatable({}, ropchain)
+    -- Recorded host batches do not need a materialized Lua-side ROP stack.
+    self.ops_only = opt.ops_only == true and run_rop_batch ~= nil
     self.stack_size = opt.stack_size or 0x2000
-    self.stack_base = opt.stack_base and uint64(opt.stack_base) or memory.alloc(self.stack_size)
+    self.stack_base = self.ops_only and uint64(0)
+        or (opt.stack_base and uint64(opt.stack_base) or memory.alloc(self.stack_size))
     self.align_offset = 0
     self.stack_offset = 0
     self.retval_addr = {}
     self.ops = {}
-    self:push_ret()
-    if self.stack_base:tonumber() % 16 ~= 0 then
+    if not self.ops_only then self:push_ret() end
+    if not self.ops_only and self.stack_base:tonumber() % 16 ~= 0 then
         local jmp_to = align_16(self.stack_base + self.stack_offset) + 0x20
         self:push_set_rsp(jmp_to)
         self.align_offset = jmp_to - self.stack_base
@@ -1064,6 +1078,9 @@ end
 function ropchain:push(v)
     if self.finalized then
         error("ropchain has been finalized and cant be modified")
+    end
+    if self.ops_only then
+        error("ops-only ropchain cannot contain raw stack values")
     end
     if self.enable_mock_push then
         if v == "__compat_shl_rax_cl" then
@@ -1282,6 +1299,7 @@ function ropchain:push_write_dword_memory(addr, v)
     if not self.enable_mock_push then
         table.insert(self.ops, { kind = "write32", addr = addr, val = v })
     end
+    if self.ops_only then return end
     self:push_set_rax(v)
     self:push_store_eax_into_memory(addr)
 end
@@ -1290,6 +1308,7 @@ function ropchain:push_write_qword_memory(addr, v)
     if not self.enable_mock_push then
         table.insert(self.ops, { kind = "write64", addr = addr, val = v })
     end
+    if self.ops_only then return end
     self:push_set_rax(v)
     self:push_store_rax_into_memory(addr)
 end
@@ -1309,6 +1328,9 @@ function ropchain:push_sysv(rdi, rsi, rdx, rcx, r8, r9)
 end
 
 function ropchain:push_syscall_raw(sysc, prep_arg_callback)
+    if self.ops_only then
+        error("ops-only ropchain requires push_syscall")
+    end
     local fn_addr = type(sysc) == "table" and sysc.fn_addr or ((syscall_addrs[20] or uint64(0)) + 7)
     local syscall_no = type(sysc) == "table" and sysc.syscall_no or sysc
     local push_size = 0
@@ -1333,6 +1355,7 @@ function ropchain:push_syscall(sysc, rdi, rsi, rdx, rcx, r8, r9)
             args = { rdi, rsi, rdx, rcx, r8, r9 }
         })
     end
+    if self.ops_only then return end
     self:push_syscall_raw(sysc, function()
         self:push_sysv(rdi, rsi, rdx, rcx, r8, r9)
     end)
@@ -1353,6 +1376,7 @@ function ropchain:push_fcall(rip, rdi, rsi, rdx, rcx, r8, r9)
             args = { rdi, rsi, rdx, rcx, r8, r9 }
         })
     end
+    if self.ops_only then return end
     self:push_sysv(rdi, rsi, rdx, rcx, r8, r9)
     self:align_stack()
     self:push(rip)
@@ -1369,7 +1393,7 @@ end
 function ropchain:push_store_retval()
     local buf = memory.alloc(8)
     table.insert(self.retval_addr, buf)
-    self:push_store_rax_into_memory(buf)
+    if not self.ops_only then self:push_store_rax_into_memory(buf) end
     return buf
 end
 
@@ -1379,6 +1403,11 @@ end
 
 function ropchain:restore_through_longjmp(jmpbuf)
     if not self.finalized then
+        if self.ops_only then
+            self.jmpbuf = jmpbuf
+            self.finalized = true
+            return
+        end
         self.jmpbuf = jmpbuf or memory.alloc(0x60)
         self:push_fcall(libc_addrofs.longjmp, self.jmpbuf, 0)
         if #self.ops > 0 and self.ops[#self.ops].rip == libc_addrofs.longjmp then

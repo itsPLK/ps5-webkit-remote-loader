@@ -253,6 +253,45 @@ assert(bit32.band(255,15)==15)
 assert(hex(uint64(77))=="0x4d")
 printf("pid %d",syscall.getpid():tonumber())
 `);
+
+const opsOnlyWrites = [];
+const opsOnlyApiOps = [];
+let opsOnlyApi;
+opsOnlyApi = {
+  ...api,
+  p: {...api.p, write8:(p,v)=>{opsOnlyWrites.push(p.low);api.p.write8(p,v);}},
+  chain: {
+    ...api.chain,
+    clear:()=>{opsOnlyApiOps.length=0;},
+    push_write8:(dest,value)=>opsOnlyApiOps.push({kind:'write',dest,value}),
+    add_syscall:(num,...args)=>opsOnlyApiOps.push({kind:'syscall',num,args}),
+    add_syscall_ret:(retAddr,num,...args)=>opsOnlyApiOps.push({kind:'syscall',retAddr,num,args}),
+    fcall:(rip,...args)=>opsOnlyApiOps.push({kind:'fcall',rip,args}),
+    run:async()=>{
+      for (const op of opsOnlyApiOps) {
+        if (op.kind==='write') opsOnlyApi.p.write8(op.dest,op.value);
+        else if (op.kind==='syscall' && op.retAddr) {
+          opsOnlyApi.p.write8(op.retAddr,op.num===20 ? new int64(77) : new int64(0));
+        }
+      }
+      return new int64(0);
+    },
+  },
+};
+await run(opsOnlyApi, `
+  local sig=memory.alloc(8)
+  local c=ropchain({stack_size=0x30000,ops_only=true})
+  assert(c.ops_only and c.stack_base==uint64(0), "record-only chain mode should skip stack allocation")
+  c:push_write_qword_memory(sig,123)
+  c:push_syscall_with_ret(syscall.getpid)
+  c:restore_through_longjmp()
+  assert(#c.ops==2)
+  assert(c:execute_through_coroutine():tonumber()==77)
+  assert(memory.read_qword(sig):tonumber()==123)
+`);
+assert.equal(opsOnlyApiOps.length,2);
+assert.equal(opsOnlyWrites.length,2,'record-only chain should write only result and return slots, not individual ROP words');
+
 const openCalls = calls.filter(c => c[0] === 5);
 assert.equal(openCalls.length, 2);
 assert.equal(openCalls[0][1].low,openCalls[1][1].low,'scratch storage must be reused');
@@ -282,6 +321,15 @@ assert(lines.some(l => l.includes('hello world from lua!')), 'compatibility hell
 assert(lines.some(l => l.includes('eboot base @ 0x800100000')), 'compatibility hello sample must print eboot_base');
 
 await run({...api,args:[]}, 'assert(type(uint64)=="function"); assert(memory.read_dword==nil); assert(syscall.resolve==nil); assert(os==nil); assert(time==nil); assert(not pcall(function() return uint64(1).tonumber end))');
+await run(api, `
+  local p = lua.resolve_value("a\\0b")
+  assert(memory.read_buffer(p, 4) == "a\\0b\\0")
+  local q = memory.alloc(8)
+  memory.write_buffer(q, "XXXXXXXX")
+  memory.free(q)
+  local cleared = memory.alloc(8)
+  assert(memory.read_buffer(cleared, 8) == string.rep("\\0", 8))
+`);
 const probeCalls = [];
 let probeResult = new int64(0);
 const probeApi = {...api, chain:{...api.chain, syscall:async(n,...args)=>{
@@ -297,6 +345,59 @@ probeResult=new int64(0xffffffff,0xffffffff);
 await run(probeApi,'assert(not file_exists("/missing"))');
 assert.deepEqual(probeCalls.map(c=>c[0]),[5],'failed open must not be closed');
 await run(probeApi,'assert(not pcall(file_exists,123))');
+const sharedKexp = Uint8Array.from([0,255,128,65]);
+const sharedElfldr = Uint8Array.from({length:385 * 1024}, (_, i) => (i * 37) & 0xff);
+let sharedPrefetchCalls = 0;
+const sharedApi = {...api, prefetchKexp: async () => {
+  sharedPrefetchCalls++;
+  return {kexpBytes:sharedKexp, elfldrBytes:sharedElfldr};
+}};
+await run(sharedApi, `
+  assert(table.concat(shared_names(), ',') == 'elfldr,kexp')
+  assert(shared_size('kexp') == 4)
+  assert(shared_bytes('kexp') == string.char(0,255,128,65))
+  local elf = shared_bytes('elfldr')
+  assert(#elf == 385 * 1024)
+  assert(string.byte(elf, 1) == 0 and string.byte(elf, 2) == 37)
+  assert(string.byte(elf, #elf) == ${((385 * 1024 - 1) * 37) & 0xff})
+`);
+assert.equal(sharedPrefetchCalls, 1, 'shared binaries should be prefetched once per Lua state');
+assert.equal(sharedKexp[1], 255, 'the API-owned binary array must remain unchanged');
+assert.equal(sharedElfldr[1], 37, 'the API-owned ELF array must remain unchanged');
+mmapCursor = 0x20000;
+const fileContents = Uint8Array.from({length:70000}, (_, i) => (i * 17) & 0xff);
+let fileOffset = 0;
+const fileReadSizes = [];
+const fileApi = {
+  ...api,
+  p: {...api.p, readInto:(pointer, out) => {
+    out.set(bytes.subarray(pointer.low, pointer.low + out.length));
+  }},
+  chain: {...api.chain, syscall:async (n, ...args) => {
+    if (n === 5) return new int64(7);
+    if (n === 6) return new int64(0);
+    if (n === 3) {
+      const pointer = args[1];
+      const requested = typeof args[2] === 'number' ? args[2] : args[2].low;
+      fileReadSizes.push(requested);
+      const got = Math.min(requested, fileContents.length - fileOffset);
+      bytes.set(fileContents.subarray(fileOffset, fileOffset + got), pointer.low);
+      fileOffset += got;
+      return new int64(got);
+    }
+    return api.chain.syscall(n, ...args);
+  }},
+};
+await run(fileApi, `
+  local f = io.open('/savedata0/elfldr-ps5.elf', 'rb')
+  local data = f:read('*all')
+  f:close()
+  assert(#data == 70000)
+  assert(string.byte(data, 65536) == ${(65535 * 17) & 0xff})
+  assert(string.byte(data, 65537) == ${(65536 * 17) & 0xff})
+  assert(string.byte(data, #data) == ${(69999 * 17) & 0xff})
+`);
+assert.deepEqual(fileReadSizes, [65536,65536,65536], 'file reads should use 64 KiB chunks');
 lines.length = 0;
 const benchSource = fs.readFileSync(new URL('../../payloads/lua/compat_bench.lua', import.meta.url), 'utf8');
 await run(api, benchSource);

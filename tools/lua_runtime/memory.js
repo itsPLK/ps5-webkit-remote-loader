@@ -103,6 +103,16 @@ module.exports = function installMemory(L, api, { value, push, bind, native }) {
     if (returnPointer) { push(s, start); return 1; }
     return 0;
   }
+  function writeLargeBuffer(s) {
+    if (lua.lua_type(s, 2) !== lua.LUA_TSTRING) throw Error('memory.write_buffer requires a Lua string');
+    const buffer = lua.lua_tolstring(s, 2);
+    const start = address(s, buffer.length);
+    for (let offset = 0; offset < buffer.length; offset += LIMIT) {
+      const end = Math.min(offset + LIMIT, buffer.length);
+      writeBytes(native(start + BigInt(offset)), buffer.subarray(offset, end));
+    }
+    return 0;
+  }
   function writeBytes(pointer, buffer) {
     if (typeof api.p.writeBytes === 'function') {
       api.p.writeBytes(pointer, buffer);
@@ -127,6 +137,7 @@ module.exports = function installMemory(L, api, { value, push, bind, native }) {
   }
   field('read_buffer', readBuffer);
   field('write_buffer', s => writeBuffer(s));
+  field('write_buffer_large', writeLargeBuffer);
   lua.lua_setglobal(L, str('memory'));
-  return {scalarReader, readBuffer, writeBuffer};
+  return {scalarReader, readBuffer, writeBuffer, writeLargeBuffer};
 };

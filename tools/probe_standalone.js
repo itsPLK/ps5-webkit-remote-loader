@@ -4,7 +4,10 @@ import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import vm from "node:vm";
+
+const require = createRequire(import.meta.url);
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const htmlPath = process.argv[2] ? resolve(process.argv[2]) : join(ROOT, "dist/hello.html");
@@ -607,11 +610,30 @@ for (const entry of queue) {
       Error, Uint8Array, ArrayBuffer, DataView, Date, JSON, Promise, Map, Set,
       int64: askInt64(),
     };
-    const runner = vm.runInNewContext(
-      `(async function () {\n${entry.source}\n//# sourceURL=payload.js\n})`,
-      payloadGlobal,
-      { filename: "payload.js" });
-    returned = await runner();
+    const isLua = /^(?:\uFEFF)?--(?:!lua|lua)(?:\r?\n|$)/.test(entry.source) ||
+      (Array.isArray(entry.args) && entry.args.some(a => a === "lua=1" || a === "compat=remote_lua_loader"));
+    if (isLua) {
+      try {
+        const luaRequire = createRequire(join(ROOT, "tools/lua_runtime/package.json"));
+        const { lua, lauxlib, to_luastring: str } = luaRequire("fengari");
+        const L = lauxlib.luaL_newstate();
+        const bytes = Buffer.from(entry.source.replace(/^\uFEFF/, ""), "utf8");
+        const status = lauxlib.luaL_loadbufferx(L, bytes, bytes.length, str("=payload.lua"), str("t"));
+        if (status !== lua.LUA_OK) {
+          threw = new Error(lua.lua_tojsstring(L, -1));
+        } else {
+          returned = () => {};
+        }
+      } catch (err) {
+        threw = err;
+      }
+    } else {
+      const runner = vm.runInNewContext(
+        `(async function () {\n${entry.source}\n//# sourceURL=payload.js\n})`,
+        payloadGlobal,
+        { filename: "payload.js" });
+      returned = await runner();
+    }
   } catch (e) {
     threw = e;
   }

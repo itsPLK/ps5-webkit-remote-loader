@@ -1,7 +1,7 @@
 #pragma once
 
 /* Base version of PS5 WebKit Remote Loader Installer */
-#define WKRLI_VERSION "0.1.3"
+#define WKRLI_VERSION "0.2.0"
 #define WKRL_VERSION WKRLI_VERSION
 
 /* Full build version header */

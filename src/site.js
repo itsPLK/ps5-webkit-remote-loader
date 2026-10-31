@@ -22,10 +22,17 @@ let sessionActive = false;
 
 window.loaderHud = {
   setTarget(ip, port, fw) {
-    if (ip) hudState.ip = ip;
-    if (port) hudState.port = port;
-    if (fw) hudState.fw = fw;
-    if (hudAddr) hudAddr.textContent = `${hudState.ip}:${hudState.port}`;
+    if (ip !== undefined) hudState.ip = ip;
+    if (port !== undefined) hudState.port = port;
+    if (fw !== undefined) hudState.fw = fw;
+    if (hudAddr) {
+      if (!hudState.ip) {
+        hudAddr.style.display = "none";
+      } else {
+        hudAddr.style.display = "";
+        hudAddr.textContent = hudState.port ? `${hudState.ip}:${hudState.port}` : `${hudState.ip}`;
+      }
+    }
     if (hudFw) hudFw.textContent = `FW ${hudState.fw}`;
   },
   setWaiting() {},
@@ -243,10 +250,15 @@ async function run() {
         "info",
       );
     }
-    writeLog(standalone.payloadCount != null
-      ? `${standalone.payloadCount} payload(s) baked in: ${standalone.payloadNames.join(", ")}`
-      : "", "info");
-    writeLog("no socket: this file is the whole session", "info");
+    if (standalone.payloadCount != null) {
+      writeLog(
+        `${standalone.payloadCount} payload(s) baked in: ${standalone.payloadNames.join(", ")}`,
+        "info",
+      );
+    }
+    if (!standalone.modular) {
+      writeLog("no socket: this file is the whole session", "info");
+    }
   } else {
     writeLog(`PS5 WebKit Remote Loader v${LOADER_VERSION}`, "info");
   }
@@ -254,9 +266,8 @@ async function run() {
   writeLog(`Firmware: ${window.fw_str}`, "info");
 
   if (window.loaderHud) {
-    // 9027 is the loader's port; a standalone page never opens one, so the HUD
-    // says "local" rather than advertising a port nothing is listening on.
-    window.loaderHud.setTarget(standalone ? "local" : null, standalone ? null : 9027, window.fw_str);
+    // A standalone page never opens a port, so hide the IP/port and display the FW.
+    window.loaderHud.setTarget(standalone ? null : "127.0.0.1", standalone ? null : 9027, window.fw_str);
   }
 
   // A single-file page carries embedded binaries as data; install the fetch that serves
@@ -265,7 +276,7 @@ async function run() {
   if (typeof window !== "undefined" && window.EMBEDDED_BINARIES) {
     const served = installInlineFetch(window.EMBEDDED_BINARIES);
     writeLog(`embedded binaries: ${served.join(", ")}`, "info");
-  } else if (standalone) {
+  } else if (standalone && !standalone.modular) {
     writeLog(`no embedded binaries in this file: api.launchKexp() will refuse`, "warn");
   }
 

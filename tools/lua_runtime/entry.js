@@ -62,6 +62,11 @@ async function run(api, source, name = '=payload.lua') {
       const message = lua.lua_tolstring(L, -1);
       throw new Error(message ? to_jsstring(message, 0, undefined, true) : 'Lua raised a non-string error');
     }
+    lua.lua_getglobal(L, to_luastring('IS_KEXP'));
+    if (lua.lua_toboolean(L, -1)) {
+      if (!api.krw) api.krw = { dead: true };
+    }
+    lua.lua_pop(L, 1);
   } catch (error) {
     failure = error;
   } finally {

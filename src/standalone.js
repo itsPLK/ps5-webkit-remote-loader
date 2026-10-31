@@ -84,14 +84,27 @@ export async function runPayloadQueue({ p, chain, payloads, onPayload }) {
       },
     });
 
-    const size = typeof entry.source === "string"
-      ? new TextEncoder().encode(entry.source).length
+    let code = entry.source;
+    if (typeof code !== "string" && entry.url) {
+      try {
+        const resp = await fetch(entry.url);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        code = await resp.text();
+      } catch (e) {
+        say(`could not load payload from ${entry.url}: ${e && e.message ? e.message : e}`, "error");
+        failed++;
+        continue;
+      }
+    }
+
+    const size = typeof code === "string"
+      ? new TextEncoder().encode(code).length
       : 0;
 
     let outcome;
     try {
       outcome = await withDeadline(
-        executePayload({ code: entry.source, size, api, log: api.log, say, servedCount: i + 1 }),
+        executePayload({ code, size, api, log: api.log, say, servedCount: i + 1 }),
         PAYLOAD_TIMEOUT_MS,
         (ms) => say(`payload has run for ${ms / 1000}s and has not returned`, "error"),
         (reset) => { deadlineControl.reset = reset; },

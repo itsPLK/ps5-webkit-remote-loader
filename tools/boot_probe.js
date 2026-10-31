@@ -206,7 +206,7 @@ console.log("\non-screen log");
 // appending it, so a snapshot taken inside appendChild sees every line as empty.
 const logLines = drawn.map((node) => node.textContent);
 const text = logLines.join("\n");
-check("the page printed its banner", /PS5 WebKit Standalone|PS5 WebKit Remote Loader|PS5 WebKit Loader/.test(text),
+check("the page printed its banner", /PS5 WebKit Standalone|PS5 WebKit Remote Loader|PS5 WebKit Loader|WebKit Autoloader/.test(text),
   logLines.slice(0, 4).join(" | "));
 check("the page printed the user agent", text.includes("PlayStation 5/9.00"));
 check("the page printed the firmware", text.includes("9.00"));

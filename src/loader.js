@@ -703,6 +703,22 @@ export function createPayloadSession({
           `load: ${e && e.message ? e.message : e}`);
       }
     },
+    executePayload: async (code, payloadArgs = []) => {
+      const subApi = createPayloadSession({
+        p, chain, say, state, deadlineControl,
+        log: async (msg, type) => { await say(msg, type); },
+        sendBlob,
+        args: Array.isArray(payloadArgs) ? payloadArgs : [payloadArgs],
+      });
+      return await executePayload({
+        code,
+        size: typeof code === "string" ? new TextEncoder().encode(code).length : code.length,
+        api: subApi,
+        log: subApi.log,
+        say,
+        servedCount: (state.servedCount || 0) + 1,
+      });
+    },
   };
 
   return api;

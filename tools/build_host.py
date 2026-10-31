@@ -59,9 +59,9 @@ def should_include(rel_path):
     return True
 
 
-def build_zip(page=None, version=None, build_time="dev"):
+def build_zip(page=None, version=None, build_time="dev", source_dir=None):
     root = repo_root()
-    if page is None:
+    if page is None and source_dir is None:
         subprocess.run(
             [sys.executable, os.path.join(root, "tools", "lua_runtime", "build_runtime.py")],
             cwd=root,
@@ -78,6 +78,29 @@ def build_zip(page=None, version=None, build_time="dev"):
 
     v_bytes = version.encode("utf-8")
     bt_bytes = build_time.encode("utf-8")
+
+    if source_dir is not None:
+        source_dir = os.path.abspath(source_dir)
+        for dirpath, dirs, filenames in os.walk(source_dir):
+            dirs.sort()
+            for fname in sorted(filenames):
+                full = os.path.join(dirpath, fname)
+                rel = os.path.relpath(full, source_dir).replace(os.sep, "/")
+                if rel.startswith(".git") or "/.git" in rel or rel.endswith(".DS_Store"):
+                    continue
+                file_map[rel] = full
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+            for rel in sorted(file_map.keys()):
+                p = file_map[rel]
+                with open(p, "rb") as f:
+                    data = f.read()
+                if b"[[VERSION_PLACEHOLDER]]" in data or b"[[BUILD_TIME_PLACEHOLDER]]" in data:
+                    data = data.replace(b"[[VERSION_PLACEHOLDER]]", v_bytes)
+                    data = data.replace(b"[[BUILD_TIME_PLACEHOLDER]]", bt_bytes)
+                    zf.writestr(rel, data)
+                else:
+                    zf.write(p, arcname=rel)
+        return archive.getvalue(), file_map
 
     if page is not None:
         entries = [page] if isinstance(page, str) else list(page)
@@ -221,6 +244,8 @@ def main(argv=None):
     parser.add_argument("--page", action="append", default=[],
                         help="Embed standalone HTML file(s) instead of the repository frontend. "
                              "Can be specified multiple times or as [NAME=]PATH.")
+    parser.add_argument("--dir", default=None,
+                        help="Embed an entire directory tree into the archive root.")
     parser.add_argument("--name", default="PS5 WEBKIT REMOTE LOADER",
                         help="Host banner title.")
     args = parser.parse_args(argv)
@@ -236,7 +261,8 @@ def main(argv=None):
     build_time = args.build_time or version_info["build_time"]
 
     pages = args.page if args.page else None
-    zip_data, file_map = build_zip(pages, version=version, build_time=build_time)
+    source_dir = args.dir if args.dir else None
+    zip_data, file_map = build_zip(pages, version=version, build_time=build_time, source_dir=source_dir)
     raw_size = sum(os.path.getsize(p) for p in file_map.values())
     payload_b64 = base64.b64encode(zip_data).decode("ascii")
 

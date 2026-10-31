@@ -112,6 +112,8 @@ string.format = function(fmt, ...)
     end)
     return core_format(patched_fmt, table.unpack(args))
 end
+string.format = __compat_format(core_format, string.format)
+__compat_format = nil
 function printf(fmt, ...) print(string.format(fmt, ...)) end
 function errorf(fmt, ...) error(string.format(fmt, ...), 2) end
 

@@ -7,6 +7,8 @@ const { psluaLiterals } = require('../pslua_literals');
 const source = psluaLiterals(require('./remote_lua_loader.lua'));
 module.exports = function install(L, api, cap) {
   const {value, push, bind, native, suspend} = cap;
+  lua.lua_pushcfunction(L, s => require('./format')(s, value));
+  lua.lua_setglobal(L, str('__compat_format'));
   // Direct common cases share the core validation and transfer code. Retain a
   // Lua fallback for conversion/metamethod behavior and large-write chunking.
   function bufferFactory(name, eligible, fast) {

@@ -371,4 +371,46 @@ await run(bulkApi, `
   assert(success and result == p)
   assert(memory.read_buffer(p, #data) == data)
 `);
+// Compare specialized uint64 conversions against the retained Lua wrapper.
+const adapterSource = fs.readFileSync(new URL('./compat/remote_lua_loader.lua', import.meta.url), 'utf8');
+const legacyFormatter = adapterSource.slice(adapterSource.indexOf('local core_format ='),
+  adapterSource.indexOf('string.format = __compat_format'));
+await run(api, `
+local current = string.format
+${legacyFormatter}
+local legacy = string.format
+string.format = current
+local function compare(fmt, value, ...)
+    local ok1, result1 = pcall(legacy, fmt, value, ...)
+    local ok2, result2 = pcall(current, fmt, value, ...)
+    assert(ok1 == ok2)
+    if ok1 then assert(result1 == result2, fmt .. ': ' .. result1 .. ' ~= ' .. result2) end
+end
+for _, fmt in ipairs({'%x', '%X', '%08x', '0x%x', '%s %x', '%x %s', '%%x', '%z'}) do
+    for _, text in ipairs({'0', '1', '2147483648', '4294967295',
+        '0x1234567887654321', '0x8000000000000000', '0xffffffffffffffff'}) do
+        compare(fmt, uint64(text))
+        compare(fmt, uint64(text), 'extra')
+    end
+    for _, n in ipairs({-1, 2147483647.0, 2147483648.0, -2147483649.0,
+        4294967295.0, 9007199254740991.0, 9007199254740992.0, 1.5, math.huge}) do
+        compare(fmt, n)
+    end
+end
+local n = uint64('0x1234567887654321')
+for i = 1, 64 do
+    n = (n << 1) + uint64(i)
+    compare('%x', n)
+    compare('%X', n)
+end
+assert(string.format('%x', uint64('0xffffffffffffffff')) == 'ffffffffffffffff')
+assert(string.format('%X', uint64('0xabcdef1234567890')) == 'ABCDEF1234567890')
+assert(__compat_format == nil)
+`);
+// A constant mock clock validates benchmark outputs, not performance.
+const formatBenchmark = fs.readFileSync(new URL('../../payloads/lua/format_bench.lua', import.meta.url), 'utf8');
+mmapCursor = 0x20000;
+const start = lines.length;
+await run(api, formatBenchmark);
+assert(lines.slice(start).some(line => line.includes('formatter benchmark complete; outputs and checksums verified')));
 console.log('Optional compatibility profile tests passed');

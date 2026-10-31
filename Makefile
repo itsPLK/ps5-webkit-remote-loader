@@ -24,6 +24,7 @@ test: lua-runtime
 	node tools/worker_park_test.mjs
 	node tools/selftest.js
 	node tools/standalone_test.js
+	node tools/lua_runtime/format_test.js
 	node tools/lua_runtime/test.js
 	node tools/lua_runtime/routing_test.mjs
 	node tools/lua_runtime/compat_test.mjs

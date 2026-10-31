@@ -5,11 +5,14 @@ import vm from 'node:vm';
 // observe the worker at its saved wait fingerprint before arming a chain, and
 // refuse to arm onto a worker that never parks.
 const source = readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
+const settleConstant = source.match(/const ROP_PARK_SETTLE_MS = (\d+);/);
+assert(settleConstant, 'worker park settle constant must be included in the fixture');
 
 function makeContext(ropParkMs) {
   const fingerprint = {low: 0x1ac90, hi: 0x8f100000};
   const context = vm.createContext({
     ROP_PARK_MS: ropParkMs,
+    ROP_PARK_SETTLE_MS: Number(settleConstant[1]),
     originalReturnAddress: fingerprint,
     returnAddress: {slot: 'slot'},
     Date,
@@ -34,7 +37,7 @@ function defineGate(context) {
   vm.runInContext(slice, context);
 }
 
-// 1. Parked slot: the gate reports park and resolves immediately.
+// 1. Parked slot: the gate resolves after the configured settle interval.
 {
   const context = makeContext(200);
   defineGate(context);

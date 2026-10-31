@@ -579,5 +579,57 @@ console.log("standalone queue runner (protocol + control flow, NOT the ROP chain
     (text().match(/.*pending after run.*/) || [""])[0]);
 }
 
+// Replay must reset stale native state exactly once before the first write,
+// while preserving later clears and cleanup after failures.
+for (const serialized of [false, true]) {
+  const {p, chain} = makeFake();
+  const events = [], snapshots = [];
+  let stack = ['stale'];
+  chain.clear = () => { events.push('clear'); stack = []; };
+  chain.push = value => {
+    events.push('push:' + value);
+    if (value === 99) throw Error('injected replay failure');
+    stack.push(value);
+  };
+  chain.run = async () => { events.push('run'); snapshots.push(stack.slice()); chain.clear(); };
+  let queue = Promise.resolve();
+  const session = createPayloadSession({
+    p, chain, state: createSessionState(p, chain), say: () => {},
+    deadlineControl: {reset: null}, log: async () => {}, sendBlob: async () => 0, args: [],
+    ...(serialized ? {serialise: fn => {
+      const work = queue.then(fn); queue = work.catch(() => {}); return work;
+    }} : {}),
+  });
+  const gated = session.chain;
+  for (const [name, record, expected, result] of [
+    ['implicit', () => gated.push(1), ['clear', 'push:1', 'run', 'clear'], [1]],
+    ['leading', () => { gated.clear(); gated.push(2); }, ['clear', 'push:2', 'run', 'clear'], [2]],
+    ['middle', () => { gated.push(3); gated.clear(); gated.push(4); },
+      ['clear', 'push:3', 'clear', 'push:4', 'run', 'clear'], [4]],
+    ['consecutive', () => { gated.clear(); gated.clear(); gated.push(5); },
+      ['clear', 'clear', 'push:5', 'run', 'clear'], [5]],
+  ]) {
+    events.length = 0;
+    stack = ['stale'];
+    record();
+    check(name + ' records without native changes (' + serialized + ')', events.length === 0);
+    await gated.run();
+    check(name + ' replay reset order (' + serialized + ')', JSON.stringify(events) === JSON.stringify(expected), JSON.stringify(events));
+    check(name + ' result (' + serialized + ')', JSON.stringify(snapshots.at(-1)) === JSON.stringify(result));
+  }
+  events.length = 0;
+  await gated.run();
+  check('empty run does no native work (' + serialized + ')', events.length === 0);
+  gated.clear(); gated.push(99);
+  let failed = false;
+  try { await gated.run(); } catch (error) { failed = /injected/.test(error.message); }
+  events.length = 0;
+  gated.push(6);
+  await gated.run();
+  check('replay failure permits a fresh reset (' + serialized + ')', failed &&
+    JSON.stringify(events) === JSON.stringify(['clear', 'push:6', 'run', 'clear']) &&
+    JSON.stringify(snapshots.at(-1)) === '[6]');
+}
+
 console.log(`\n${checks - failures}/${checks} checks passed`);
 process.exit(failures ? 1 : 0);

@@ -418,7 +418,8 @@ export function createPayloadSession({
       if (!ops) return Promise.resolve();
       const batch = ops;
       ops = null;
-      chain.clear();
+      // A leading recorded clear already performs the mandatory full reset.
+      if (!batch.length || batch[0][0] !== "clear") chain.clear();
       for (const [name, args] of batch) chain[name](...args);
       return chain.run();
     }

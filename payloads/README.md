@@ -65,3 +65,16 @@ Additional configuration is defined in `makeConfig()` in
 After a dirty or missing poops cleanup verdict, reboot before retrying.
 `latch-clear` explicitly overrides the latch. Gadget and syscall checks detect
 missing table entries; they do not prove a firmware is exploitable.
+
+### Host syscall benchmark
+
+`syscall_bench.js` profiles individual getpid calls and batches of 1, 8, and 32
+through the normal gated worker API. Version 2 also opts into scoped park, setup,
+and worker completion counters for individual calls and implicit batch-32 calls,
+then compares profiled and unprofiled elapsed time to estimate instrumentation overhead. It separates JS recording from combined
+queue/replay/execution time and checks every saved result. Run with
+`python3 tools/send.py <IP> 9027 payloads/syscall_bench.js`; add `--arg quick`
+for a short correctness smoke test. The default uses five samples and one warmup.
+It does not disable the worker watchdog. This is a host diagnostic, not a portable
+Lua benchmark; execution timings do not isolate native stack clearing or worker
+turnaround.

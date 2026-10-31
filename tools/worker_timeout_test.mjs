@@ -9,7 +9,7 @@ assert(start >= 0 && end > start);
 const timers = new Map();
 let next = 0;
 const worker = {postMessage:()=>{}};
-const context = vm.createContext({worker, ROP_WAIT_MS:20000,
+const context = vm.createContext({worker, timing: null, ROP_WAIT_MS:20000,
   setTimeout: fn => {const id=++next;timers.set(id,fn);return id;},
   clearTimeout: id=>timers.delete(id),
 });

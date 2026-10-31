@@ -1,5 +1,5 @@
 --!lua
--- Benchmark v4c: stall-phase patterns with bounded, reclaimed scratch memory.
+-- Benchmark v4d: stall-phase patterns with bounded, reclaimed scratch memory.
 -- Measures host round-trip cost, scalar store dispatch, queue submit/poll/cancel
 -- sweep patterns, probe tuple patterns, sysctl marshaling, scan loops, chain
 -- batching, result readback, and sleep quantization.
@@ -536,7 +536,7 @@ add("chain exec, 40-syscall batch", 3, false, function(n)
     return total
 end, 3)
 
-add("getpid control, 40 individual calls", 3, false, function(n)
+add("getpid post-chain control, 40 individual calls", 3, false, function(n)
     local total = 0
     for _ = 1, n do
         for _ = 1, 40 do total = total + syscall.getpid():tonumber() end
@@ -696,7 +696,7 @@ local function sample(c, save)
     if save then c.times[#c.times + 1] = elapsed end
 end
 
-print("compat benchmark v4c: stall-phase patterns, 3 samples, 1 warmup per case")
+print("compat benchmark v4d: stall-phase patterns, 3 samples, 1 warmup per case")
 print("Units: elapsed microseconds; fixed counts; setup/logging/cleanup outside timing.")
 print("Case columns: median ms | min ms | max ms | median us per pattern-op | status")
 
@@ -762,8 +762,8 @@ local format_us = us_of("string.format control")
 local hex_us = us_of("uint64 formatting control")
 local probe_a = us_of("stream probe, per-field tuple")
 local probe_b = us_of("stream probe, bulk tuple transfer")
-local sleep_short = us_of("short sleep quantization (10 x 1 ms)") / 10
-local sleep_long = us_of("long sleep quantization (3 x 50 ms)") / 3
+local sleep_short = us_of("short sleep quantization (10 x 1 ms)")
+local sleep_long = us_of("long sleep quantization (3 x 50 ms)")
 
 printf("unit medians: round-trip %.3f us | store dispatch %.3f us | bulk store %.3f us | construct+add %.3f us | format %.3f us | hex %.3f us",
     rt, store_a, store_b, construct, format_us, hex_us)
@@ -777,4 +777,4 @@ printf("phase 2 estimate (R%d S%d K%d F%d P%d): %.1f ms", R2, S2, K2, F2, P2_, p
 printf("reference phase totals estimate: %.1f ms (counts are profile constants, unit times are measured medians)",
     phase1 + phase2)
 
-print("compat benchmark v4c complete; all checksums verified; requests cancelled; sockets closed")
+print("compat benchmark v4d complete; all checksums verified; requests cancelled; sockets closed")

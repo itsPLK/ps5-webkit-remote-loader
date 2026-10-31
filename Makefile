@@ -20,10 +20,13 @@ installer:
 test: lua-runtime
 	node tools/memory_bulk_test.mjs
 	node tools/memory_bench_test.mjs
+	node tools/syscall_bench_test.mjs
+	node tools/worker_profile_test.mjs
 	node tools/worker_timeout_test.mjs
 	node tools/worker_park_test.mjs
 	node tools/selftest.js
 	node tools/standalone_test.js
+	node tools/lua_runtime/benchmark_report_test.js
 	node tools/lua_runtime/format_test.js
 	node tools/lua_runtime/test.js
 	node tools/lua_runtime/routing_test.mjs

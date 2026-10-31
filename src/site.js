@@ -39,17 +39,61 @@ window.loaderHud = {
   setError(err) {}
 };
 
+let activeBox = null;
+
+function startLogBox({ id, label, className } = {}) {
+  if (!output) return null;
+  if (activeBox) endLogBox();
+
+  const box = document.createElement("div");
+  box.className = className || "luak1t-box";
+
+  const header = document.createElement("div");
+  header.className = "luak1t-header";
+
+  const badge = document.createElement("span");
+  badge.className = "luak1t-badge";
+  badge.textContent = label || "Lua";
+  header.appendChild(badge);
+  box.appendChild(header);
+
+  const content = document.createElement("div");
+  content.className = "luak1t-content";
+  box.appendChild(content);
+
+  output.appendChild(box);
+  activeBox = { box, header, content };
+
+  output.scrollTop = output.scrollHeight;
+  if (document.body && typeof window.scrollTo === "function") {
+    window.scrollTo(0, document.body.scrollHeight);
+  }
+  return box;
+}
+
+function endLogBox() {
+  activeBox = null;
+  if (output) {
+    output.scrollTop = output.scrollHeight;
+    if (document.body && typeof window.scrollTo === "function") {
+    window.scrollTo(0, document.body.scrollHeight);
+  }
+  }
+}
+
 function writeLog(message, type = "log", replace = false) {
   if (!output) return;
   if (message == null) message = "";
 
+  const container = (activeBox && activeBox.content) ? activeBox.content : output;
+
   const lines = String(message).split("\n");
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i];
-    let line = (replace && i === 0) ? output.lastElementChild : null;
+    let line = (replace && i === 0) ? container.lastElementChild : null;
     if (!line) {
       line = document.createElement("div");
-      output.appendChild(line);
+      container.appendChild(line);
     }
 
     if (raw.trim() === "") {
@@ -109,6 +153,11 @@ function writeLog(message, type = "log", replace = false) {
   }
 
   // Cap DOM history to prevent out-of-memory in WebKit process
+  if (container !== output && container.childNodes.length > 1000) {
+    while (container.childNodes.length > 800) {
+      container.removeChild(container.firstChild);
+    }
+  }
   if (output.childNodes.length > 1200) {
     while (output.childNodes.length > 1000) {
       output.removeChild(output.firstChild);
@@ -116,7 +165,9 @@ function writeLog(message, type = "log", replace = false) {
   }
 
   output.scrollTop = output.scrollHeight;
-  window.scrollTo(0, document.body.scrollHeight);
+  if (document.body && typeof window.scrollTo === "function") {
+    window.scrollTo(0, document.body.scrollHeight);
+  }
 }
 
 function writeEvent(name, detail, type) {
@@ -124,7 +175,12 @@ function writeEvent(name, detail, type) {
     type || (name === "Failed" ? "error" : "log"));
 }
 
+writeLog.startBox = startLogBox;
+writeLog.endBox = endLogBox;
+
 window.writeLog = writeLog;
+window.startLogBox = startLogBox;
+window.endLogBox = endLogBox;
 window.jb = { mark: writeEvent };
 
 // Route window.alert to writeLog so rogue alerts never freeze the console

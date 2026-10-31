@@ -79,6 +79,16 @@ async function findWorkerReturnSlot(p, stack, libKernelBase) {
 function log(message, type = "log") {
   window.writeLog(message, type);
 }
+log.startBox = (opts) => {
+  if (typeof window !== "undefined" && typeof window.startLogBox === "function") {
+    return window.startLogBox(opts);
+  }
+};
+log.endBox = () => {
+  if (typeof window !== "undefined" && typeof window.endLogBox === "function") {
+    return window.endLogBox();
+  }
+};
 
 const ROP_WAIT_MS = 20000;
 // Time to wait for the worker to be parked in its libkernel wait before arming

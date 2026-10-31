@@ -16,6 +16,16 @@ function screenLog(message, type = "log") {
     console.log(`[${type}] ${message}`);
   }
 }
+screenLog.startBox = (opts) => {
+  if (typeof window !== "undefined" && typeof window.startLogBox === "function") {
+    return window.startLogBox(opts);
+  }
+};
+screenLog.endBox = () => {
+  if (typeof window !== "undefined" && typeof window.endLogBox === "function") {
+    return window.endLogBox();
+  }
+};
 
 function noSocketSendBlob(bytes) {
   const length = bytes instanceof Uint8Array ? bytes.length : (bytes && bytes.length) || 0;

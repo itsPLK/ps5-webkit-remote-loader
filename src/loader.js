@@ -196,11 +196,17 @@ export async function executePayload({ code, size, api, log, say, servedCount })
   const runner = (0, eval);
   const startTime = Date.now();
   let failure = null;
+  const argsList = Array.isArray(api.args) ? api.args : [];
+  const isLua = /^(?:\uFEFF)?--(?:!lua|lua)(?:\r?\n|$)/.test(code) ||
+    argsList.includes("compat=remote_lua_loader") ||
+    argsList.includes("lua=1");
+  const boxOpener = (say && typeof say.startBox === "function") ? say.startBox
+    : (typeof window !== "undefined" && (window.startLogBox || (window.writeLog && window.writeLog.startBox)));
+  const boxCloser = (say && typeof say.endBox === "function") ? say.endBox
+    : (typeof window !== "undefined" && (window.endLogBox || (window.writeLog && window.writeLog.endBox)));
+  let boxOpened = false;
+
   try {
-    const argsList = Array.isArray(api.args) ? api.args : [];
-    const isLua = /^(?:\uFEFF)?--(?:!lua|lua)(?:\r?\n|$)/.test(code) ||
-      argsList.includes("compat=remote_lua_loader") ||
-      argsList.includes("lua=1");
     let entry;
     if (isLua) {
       const { run } = await import("./lua-vm.js");
@@ -209,6 +215,11 @@ export async function executePayload({ code, size, api, log, say, servedCount })
       entry = runner(`(async function () {\n${code}\n//# sourceURL=payload.js\n})`);
     }
     await log("");
+
+    if (isLua && typeof boxOpener === "function") {
+      boxOpener({ id: "luak1t", label: "Lua" });
+      boxOpened = true;
+    }
 
     let result = await entry();
     if (typeof result === "function") result = await result(api);
@@ -240,6 +251,9 @@ export async function executePayload({ code, size, api, log, say, servedCount })
       }
     }
   } finally {
+    if (boxOpened && typeof boxCloser === "function") {
+      boxCloser();
+    }
     const duration = ((Date.now() - startTime) / 1000).toFixed(1);
     if (typeof window !== "undefined" && window.loaderHud) {
       window.loaderHud.setDone({ duration, servedCount });
@@ -773,6 +787,8 @@ async function serveConnection(p, chain, say, state, client, inBuf, outBuf, init
     pendingBytes += message.length + 6;
     return flush();
   }
+  log.startBox = (opts) => { if (say && typeof say.startBox === "function") return say.startBox(opts); };
+  log.endBox = () => { if (say && typeof say.endBox === "function") return say.endBox(); };
 
   async function sendBlob(bytes) {
     const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);

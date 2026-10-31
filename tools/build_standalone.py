@@ -248,10 +248,14 @@ def load_binary_config():
 class Payload(object):
     def __init__(self, path, args):
         self.path = path
-        self.args = args
+        self.args = list(args or [])
         self.label = os.path.basename(path)
         with open(repo_path(path), "r", encoding="utf-8") as f:
             self.source = f.read()
+        if path.lower().endswith(".lua"):
+            if not self.source.startswith(("--!lua", "--lua", "\ufeff--!lua", "\ufeff--lua")):
+                if "lua=1" not in self.args and "compat=remote_lua_loader" not in self.args:
+                    self.args.append("lua=1")
 
     @property
     def byte_length(self):

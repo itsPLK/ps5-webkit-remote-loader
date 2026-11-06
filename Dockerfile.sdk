@@ -5,6 +5,8 @@ FROM ubuntu:24.04
 # Install dependencies
 # Clang 18 and LLD 18 are required by the SDK
 # librsvg2-bin provides rsvg-convert for build-time icon asset generation
+# nodejs/npm (Ubuntu 24.04 ships Node 18.19, satisfying LuaK1t's >=18 requirement)
+# build the bundled Lua runtime (tools/lua_runtime/build_runtime.py)
 RUN apt-get update && apt-get install -y \
     git \
     cmake \
@@ -20,6 +22,8 @@ RUN apt-get update && apt-get install -y \
     sudo \
     unzip \
     librsvg2-bin \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
 
 # Set up Clang 18 as default

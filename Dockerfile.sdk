@@ -48,4 +48,8 @@ RUN bash /opt/build_deps.sh
 
 # Set the environment variables for subsequent builds
 ENV PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
+# build_release.sh runs this image with -u <host-uid>:<host-gid>, a UID with no
+# /etc/passwd entry, so $HOME resolves to "/" and npm's cache dir (~/.npm)
+# isn't writable. Point HOME at /tmp, which is world-writable regardless of UID.
+ENV HOME=/tmp
 WORKDIR /src

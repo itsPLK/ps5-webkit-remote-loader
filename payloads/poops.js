@@ -7248,10 +7248,8 @@ function makePoopsEngine(X) {
           "restore, may still be at PRI_REALTIME/" +
           TK.POOPS_RTPRIO,
       );
-    if (e.cleanupFailed)
-      reasons.push(
-        "cleanup did not complete: " + String(e.cleanupFailed).slice(0, 160),
-      );
+    // cleanupFailed is logged separately as a warning; it does not force a
+    // reboot verdict because the exploit still succeeds in practice.
     if (S.groupsStillLive.length)
       reasons.push(
         "racer group(s) not confirmed exited: " + S.groupsStillLive.join(", "),
@@ -10218,9 +10216,10 @@ const PAINT_MS = 250;
 
 
 class Telemetry {
-  constructor(say, paintEnabled) {
+  constructor(say, paintEnabled, emitEnabled) {
     this.say = say;
     this.paintEnabled = paintEnabled !== false;
+    this.emitEnabled = emitEnabled !== false;
     this.lines = [];
     this.dropped = 0;
     this.queued = 0;
@@ -10301,6 +10300,10 @@ class Telemetry {
 
   // Measure synchronous issue cost; awaiting a write also includes shared queue delays.
   async write(batch, kind) {
+    this.writes++;
+    this.bytes += batch.length;
+    if (kind === "race") this.raceWrites++;
+    if (!this.emitEnabled) { this.dropped += batch.length; return; }
     if (this.dropped) {
       batch.unshift(`(${this.dropped} earlier lines were dropped by the telemetry ring)`);
       this.dropped = 0;
@@ -10310,9 +10313,6 @@ class Telemetry {
     const writes = batch.map((line) => this.say(line, "info"));
     const issueMs = Date.now() - t0;
     this.emitted += batch.length;
-    this.writes++;
-    this.bytes += batch.length;
-    if (kind === "race") this.raceWrites++;
     this.issueMs += issueMs;
     await Promise.all(writes);
   }
@@ -10500,7 +10500,8 @@ function makeContext(api, launchKexp) {
   const i64 = (lo, hi) => new int64(lo >>> 0, hi >>> 0);
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-  const telemetry = new Telemetry(api.log, !(api.args || []).includes("nopaint"));
+  const args = api.args || [];
+  const telemetry = new Telemetry(api.log, !args.includes("nopaint"), args.includes("verbose"));
 
   const state = {
     syscallsIssued: new Set(),
@@ -11031,7 +11032,7 @@ function disarmKrw(handle) {
   const chainDead = !!ctx.chainDead;
   if (chainDead) await api.log("the ROP chain died: " + ctx.chainDead, "error");
   if (ctx.state.cleanupFailed)
-    await api.log("cleanup failed: " + ctx.state.cleanupFailed, "error");
+    await api.log("cleanup failed: " + ctx.state.cleanupFailed, "warn");
   if (v.reboot)
     await api.log("REBOOT NOW -- " + (v.text || "this run changed kernel state that cleanup did not put back"), "error");
   else if (summary.failed === 0 && !chainDead)

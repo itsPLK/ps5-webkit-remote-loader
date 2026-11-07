@@ -32,6 +32,8 @@ Lua payloads with a `--!lua` first line use the Lua runtime instead. See the
 | `api.config` | Binary paths from `src/binaries.js` with `window.LOADER_CONFIG` overrides |
 | `api.prefetchKexp(options)` | Fetch and cache kernel payload (`kexp.bin`) and ELF loader (`elfldr.elf`) |
 | `api.launchKexp(options)` | Run post-exploit pipeline with an active kernel R/W handle |
+| `api.enableSyncGates()` | Enable ROP worker synchronisation gates (park-wait, hook restore, poison check) before each chain call. Off by default; Relapse opts in for stability |
+| `api.disableSyncGates()` | Disable synchronisation gates (restore the fast fire-and-forget path) |
 | `api.isFailure(rv)`, `api.isUnexpected(rv)`, `api.describe(rv)` | Syscall return value helpers and errno formatting |
 
 ## Execution Model & Constraints

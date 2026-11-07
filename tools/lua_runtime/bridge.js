@@ -112,6 +112,8 @@ function install(L, api, { onResume = () => {} } = {}) {
   lua.lua_pushcfunction(L,s=>{ lua.lua_pushinteger(s,20); lua.lua_insert(s,1); return call(s,true); });
   lua.lua_setfield(L,-2,str('getpid'));
   lua.lua_setglobal(L,str('syscall'));
+  lua.lua_pushcfunction(L, () => { if (api.enableSyncGates) api.enableSyncGates(); return 0; });
+  lua.lua_setglobal(L, str('enable_sync_gates'));
   async function resume() {
     let status = lua.lua_resume(L,null,0);
     while (status === lua.LUA_YIELD) {

@@ -18,11 +18,7 @@ See [docs/API.md](../docs/API.md) for the payload authoring API reference.
 | [df.js](df.js) | Filesystem capacity and mount flags | Paths, `bytes`, `inodes`, `flags`, `all`, `json`, `help` |
 | [readfile.js](readfile.js) | Read files | Paths, `text`, `hex`, `both`, `width=N`, `offset=N`, `limit=N` |
 | [klog.js](klog.js) | Read `/dev/klog` | `follow`, `timeout=N`, `sec=N`, `grep=TEXT`, `filter=TEXT`, `raw` |
-| [relapse.js](relapse.js) | Relapse kernel exploit (FW 7.00–13.60, except 9.05) | `map`, `pipes`, `spawn` (default) |
-| [poops.js](poops.js) | Poops kernel exploit (FW 7.00–12.00) ladder | See below |
-
-For Lua usage and compatibility-profile details, see the
-[Lua compatibility guide](../docs/LUA_COMPATIBILITY.md).
+| [relapse.js](relapse.js) | Invoke Wobkot's Relapse implementation | None |
 
 ## FTP
 
@@ -40,41 +36,21 @@ ends the payload.
 
 ## Kernel payloads
 
-* **Relapse** (`payloads/relapse.js`): FW 7.00 – 13.60 (except 9.05; requires an active network interface).
-* **Poops** (`payloads/poops.js`): FW 7.00 – 12.00 (covers 9.05).
+* **Relapse** (`payloads/relapse.js`) invokes the vendored Wobkot implementation on the active Wobkot userland.
+* **Poops is no longer supported** by the active runtime. Its old source remains temporarily as porting reference.
 
-Relapse and poops attempt privilege escalation and launch the bundled ELF loader
+Relapse attempts privilege escalation and launches the bundled ELF loader
 ([elfldr](https://github.com/ps5-payload-dev/elfldr)) on port 9021 via kernel shellcode
 ([ps5-kexp](https://github.com/itsPLK/ps5-kexp); see [shared/README.md](../shared/README.md)).
-Their kernel accessors are disabled after cleanup. Relapse refuses
-an existing `api.krw`; poops also tracks a session latch and cleanup verdict.
-
-A bare poops send uses `trigger=netcontrol`, `attempts=8`, `sockets=80`, `payload=1`.
-
-```sh
-python3 tools/send.py <PS5_IP> 9027 payloads/poops.js --arg trigger=none
-python3 tools/send.py <PS5_IP> 9027 payloads/poops.js --arg payload=off
-python3 tools/send.py <PS5_IP> 9027 payloads/poops.js --arg payload=dry
-```
-
-`trigger=none` selects the negative control. `payload=off` skips stage 5;
-`payload=dry` stops after binary mapping and pipe setup, before shellcode execution.
-Additional configuration is defined in `makeConfig()` in
-[tools/poops_port/adapter.js.txt](../tools/poops_port/adapter.js.txt).
-
-After a dirty or missing poops cleanup verdict, reboot before retrying.
-`latch-clear` explicitly overrides the latch. Gadget and syscall checks detect
-missing table entries; they do not prove a firmware is exploitable.
+The kernel exploit, cleanup, jailbreak patches, and binary handoff are Wobkot's.
+The active integration exposes Relapse on PS5 6.00–13.60; this project has
+hardware-verified the complete userland and Relapse flow on 7.61.
 
 ### Host syscall benchmark
 
 `syscall_bench.js` profiles individual getpid calls and batches of 1, 8, and 32
-through the normal gated worker API. Version 2 also opts into scoped park, setup,
-and worker completion counters for individual calls and implicit batch-32 calls,
-then compares profiled and unprofiled elapsed time to estimate instrumentation overhead. It separates JS recording from combined
-queue/replay/execution time and checks every saved result. Run with
+through the payload compatibility API. The Wobkot adapter currently replays recorded
+batches sequentially and checks every saved result. Run with
 `python3 tools/send.py <IP> 9027 payloads/syscall_bench.js`; add `--arg quick`
 for a short correctness smoke test. The default uses five samples and one warmup.
-It does not disable the worker watchdog. This is a host diagnostic, not a portable
-Lua benchmark; execution timings do not isolate native stack clearing or worker
-turnaround.
+This is a host diagnostic; execution timings do not isolate native stack clearing.

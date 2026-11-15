@@ -61,9 +61,14 @@ $(FILE_REGISTRY_STAMP): version icons
 	cp -R installer/frontend/pointer/. $(STAGE_DIR)/app/ && \
 	cp index.html $(STAGE_DIR)/app/$$V/ && \
 	cp -R src $(STAGE_DIR)/app/$$V/ && \
-	cp -R offsets $(STAGE_DIR)/app/$$V/ && \
+	cp -R vendor $(STAGE_DIR)/app/$$V/ && \
 	cp -R shared $(STAGE_DIR)/app/$$V/ && \
 	if [ -d payloads ]; then cp -R payloads $(STAGE_DIR)/app/$$V/; fi && \
+	rm -f $(STAGE_DIR)/app/$$V/src/firmware.js $(STAGE_DIR)/app/$$V/src/main.js \
+		$(STAGE_DIR)/app/$$V/src/rop.js $(STAGE_DIR)/app/$$V/src/webkit.js \
+		$(STAGE_DIR)/app/$$V/src/utils/rop_slave.js $(STAGE_DIR)/app/$$V/src/lua-vm.js \
+		$(STAGE_DIR)/app/$$V/payloads/poops.js && \
+	rm -rf $(STAGE_DIR)/app/$$V/payloads/lua && \
 	mkdir -p $(STAGE_DIR)/app/$$V/tools && \
 	cp tools/send.py $(STAGE_DIR)/app/$$V/tools/ && \
 	echo "$$V" > $(STAGE_DIR)/VERSION

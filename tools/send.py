@@ -230,14 +230,7 @@ def send_file(host, port, path, raw=False, save_dir=None, args=None):
         data = f.read()
     arg_list = list(args or [])
     if path.lower().endswith(".lua"):
-        has_compat = any(a.startswith("compat=") for a in arg_list)
-        if not has_compat:
-            arg_list.append("compat=remote_lua_loader")
-        elif "lua=1" not in arg_list and not any(a == "compat=remote_lua_loader" for a in arg_list):
-            if not data.startswith((b"--!lua", b"--lua", b"\xef\xbb\xbf--!lua", b"\xef\xbb\xbf--lua")):
-                arg_list.append("lua=1")
-        if "compat=remote_lua_loader" in arg_list:
-            data = bundle_lua_requires(path, data)
+        raise SystemExit("Lua payloads are not supported by the Wobkot runtime")
     if len(data) > 512 * 1024:
         print(paint(f"[-] payload is {len(data)} bytes, over the 512 KiB limit", 31))
         return 1

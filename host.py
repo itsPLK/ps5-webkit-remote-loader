@@ -17,7 +17,6 @@ import io
 import mimetypes
 import os
 import posixpath
-import re
 import socket
 import socketserver
 import ssl
@@ -32,7 +31,7 @@ import zipfile
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 # [[VERSION_PLACEHOLDER]]
-VERSION = "0.2.2"
+VERSION = "0.3.0"
 HOST_NAME = "PS5 WEBKIT REMOTE LOADER"
 
 # [[BUILD_TIME_PLACEHOLDER]]
@@ -278,33 +277,8 @@ class GuideHandler(SimpleHTTPRequestHandler):
         if not rel or rel.endswith("/"):
             candidates = [rel + n for n in ("index.html", "index.htm")]
 
-        # Exploit routing based on explicit ?exploit= or User-Agent firmware.
-        # Firmware 9.05 does not support Relapse; route it to Poops if present.
-        agent = self.headers.get("User-Agent", "")
-        m = re.search(r"PlayStation 5/(\d+\.\d+)", agent)
-        fw = float(m.group(1)) if m else None
-        is_poops_fw = fw is not None and round(fw, 2) == 9.05
-
-        query_exploit = None
-        if "?" in self.path:
-            qs = urllib.parse.parse_qs(self.path.split("?", 1)[1])
-            query_exploit = qs.get("exploit", [None])[0]
-
-        self._routed_fw = fw
-        self._routed_poops = is_poops_fw
-        self._query_exploit = query_exploit
-
-        want_poops = query_exploit == "poops" or (query_exploit is None and is_poops_fw)
-        want_relapse = query_exploit == "relapse"
-
-        if "index.html" in candidates or "index.htm" in candidates:
-            if want_poops:
-                candidates.insert(0, "poops.html")
-            elif want_relapse:
-                candidates.insert(0, "relapse.html")
-
-        if "relapse.html" in candidates and "index.html" not in candidates:
-            candidates.append("index.html")
+        # Wobkot is the only runtime; all requests resolve directly against the
+        # one canonical document tree without firmware or query-string routing.
 
         # 1. Embedded zip archive (standalone bundled release mode)
         z = get_embedded_zip()
@@ -379,12 +353,7 @@ class GuideHandler(SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
         self.send_header("Pragma", "no-cache")
         self.end_headers()
-        shown_detail = shown
-        if shown == "poops.html" and getattr(self, "_routed_poops", False):
-            shown_detail = f"{shown} (PS5 FW {self._routed_fw:.2f} routed to Poops)"
-        elif getattr(self, "_query_exploit", None):
-            shown_detail = f"{shown} (exploit={self._query_exploit})"
-        self._log(f"{self.command} {raw_path} -> {shown_detail}")
+        self._log(f"{self.command} {raw_path} -> {shown}")
         if raw_path.startswith("/document/"):
             self.server.status.on_document()
         return io.BytesIO(data)
@@ -649,14 +618,6 @@ def main(argv=None):
     if args.no_dns and args.no_https and args.http_port is None:
         bad("every server is disabled, nothing to do.")
         return 1
-
-    if not EMBEDDED_ZIP_B64:
-        runtime_builder = os.path.join(REPO_ROOT, "tools", "lua_runtime", "build_runtime.py")
-        try:
-            subprocess.run([sys.executable, runtime_builder], cwd=REPO_ROOT, check=True)
-        except (OSError, subprocess.CalledProcessError):
-            bad("Could not build the Lua runtime.")
-            return 1
 
     ip = args.ip or detect_local_ip()
 

@@ -56,16 +56,11 @@ class EmbeddedAssetsTest(unittest.TestCase):
             cfg = standalone.extract_json_assignment(html, 'LOADER_CONFIG')
             self.assertEqual(cfg, {'ELFLDR_ELF': custom_url})
 
-    def test_lua_payload_default_compat_arg(self):
-        p_default = standalone.Payload('payloads/lua/compat_smoke.lua', [])
-        self.assertIn('compat=remote_lua_loader', p_default.args)
-
-        p_custom = standalone.Payload('payloads/lua/compat_smoke.lua', ['compat=none'])
-        self.assertNotIn('compat=remote_lua_loader', p_custom.args)
-        self.assertEqual(p_custom.args, ['compat=none'])
-
+    def test_lua_payloads_are_rejected(self):
+        with self.assertRaises(SystemExit):
+            standalone.Payload('payloads/lua/compat_smoke.lua', [])
         p_js = standalone.Payload('payloads/hello_world.js', [])
-        self.assertNotIn('compat=remote_lua_loader', p_js.args)
+        self.assertEqual(p_js.args, [])
 
     def test_single_page_host(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -86,7 +81,7 @@ class EmbeddedAssetsTest(unittest.TestCase):
             compile(source, output, 'exec')
             self.assertIn('HOST_NAME = ' + json.dumps('Custom "host"'), source)
 
-    def test_multi_page_host_and_fw_routing(self):
+    def test_multi_page_host_has_no_exploit_routing(self):
         import sys
         sys.path.insert(0, host.repo_root())
         import host as live_host
@@ -130,12 +125,12 @@ class EmbeddedAssetsTest(unittest.TestCase):
                 self.assertEqual(res[2], 'index.html')
                 self.assertEqual(res[3], data_relapse)
 
-                # 2. PS5 FW 9.05 (incompatible with Relapse) -> routes to poops.html
+                # 2. Firmware never selects another runtime.
                 handler.path = '/document/en/ps5/index.html'
                 handler.headers = {'User-Agent': 'Mozilla/5.0 (PlayStation 5/9.05) AppleWebKit/605.1.15'}
                 res = handler._resolve()
-                self.assertEqual(res[2], 'poops.html')
-                self.assertEqual(res[3], data_poops)
+                self.assertEqual(res[2], 'index.html')
+                self.assertEqual(res[3], data_relapse)
 
                 # 3. PS5 FW 11.40 (compatible with Relapse) -> serves index.html (Relapse)
                 handler.path = '/document/en/ps5/index.html'
@@ -144,18 +139,18 @@ class EmbeddedAssetsTest(unittest.TestCase):
                 self.assertEqual(res[2], 'index.html')
                 self.assertEqual(res[3], data_relapse)
 
-                # 4. Explicit query override ?exploit=poops on FW 7.61 -> routes to poops.html
+                # 4. Legacy query parameters do not route to Poops.
                 handler.path = '/document/en/ps5/index.html?exploit=poops'
                 handler.headers = {'User-Agent': 'Mozilla/5.0 (PlayStation 5/7.61) AppleWebKit/605.1.15'}
                 res = handler._resolve()
-                self.assertEqual(res[2], 'poops.html')
-                self.assertEqual(res[3], data_poops)
+                self.assertEqual(res[2], 'index.html')
+                self.assertEqual(res[3], data_relapse)
 
-                # 5. Explicit query override ?exploit=relapse on FW 9.05 -> routes to relapse.html
+                # 5. Legacy Relapse query parameters also keep the canonical page.
                 handler.path = '/document/en/ps5/index.html?exploit=relapse'
                 handler.headers = {'User-Agent': 'Mozilla/5.0 (PlayStation 5/9.05) AppleWebKit/605.1.15'}
                 res = handler._resolve()
-                self.assertEqual(res[2], 'relapse.html')
+                self.assertEqual(res[2], 'index.html')
                 self.assertEqual(res[3], data_relapse)
             finally:
                 live_host._embedded_zip_cache = old_zip
@@ -181,12 +176,12 @@ class EmbeddedAssetsTest(unittest.TestCase):
                 self.assertEqual(res[2], 'index.html')
                 self.assertEqual(res[3], data_relapse)
 
-                # 2. FW 9.05 -> poops.html
+                # 2. FW 9.05 remains on Wobkot's index page.
                 handler.path = '/document/en/ps5/index.html'
                 handler.headers = {'User-Agent': 'Mozilla/5.0 (PlayStation 5/9.05) AppleWebKit/605.1.15'}
                 res = handler._resolve()
-                self.assertEqual(res[2], 'poops.html')
-                self.assertEqual(res[3], data_poops)
+                self.assertEqual(res[2], 'index.html')
+                self.assertEqual(res[3], data_relapse)
 
                 # 3. Explicit query override ?exploit=relapse on FW 9.05 -> resolves to index.html (Relapse)
                 handler.path = '/document/en/ps5/index.html?exploit=relapse'
@@ -195,12 +190,11 @@ class EmbeddedAssetsTest(unittest.TestCase):
                 self.assertEqual(res[2], 'index.html')
                 self.assertEqual(res[3], data_relapse)
 
-                # 4. Explicit direct request to /relapse.html -> falls back to index.html (Relapse)
+                # 4. Missing custom pages do not silently alias to index.html.
                 handler.path = '/relapse.html'
                 handler.headers = {'User-Agent': 'Mozilla/5.0 (PlayStation 5/7.61) AppleWebKit/605.1.15'}
                 res = handler._resolve()
-                self.assertEqual(res[2], 'index.html')
-                self.assertEqual(res[3], data_relapse)
+                self.assertIsNone(res)
             finally:
                 live_host._embedded_zip_cache = old_zip
                 live_host._embedded_zip_loaded = old_loaded

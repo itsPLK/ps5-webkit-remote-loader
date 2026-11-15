@@ -9,8 +9,11 @@ return async function (api) {
 };
 ```
 
-Lua payloads with a `--!lua` first line use the Lua runtime instead. See the
-[Lua compatibility guide](LUA_COMPATIBILITY.md) for bindings and usage.
+The Wobkot runtime executes JavaScript payloads. The former Lua translation
+layer is not part of this runtime.
+
+The compatibility API is available on the same supported range as the active
+Wobkot integration (PS5 6.00–13.60). Hardware validation currently covers 7.61.
 
 ## API Reference
 
@@ -18,11 +21,11 @@ Lua payloads with a `--!lua` first line use the Lua runtime instead. See the
 |---|---|
 | `api.p` | Memory primitives: `read1/2/4/8`, `write1/2/4/8`, `leakval`, `writestr`, `malloc`, `stringify` |
 | `api.allowXotextReads` | Boolean flag; set to `true` to bypass the execute-only memory read guard |
-| `api.chain` | Gated ROP calls: `syscall`, `call`, or `clear` / `add_syscall` / `add_syscall_ret` / `run` batches |
+| `api.chain` | Wobkot native calls: `syscall`, `call`, or recorded `clear` / `add_syscall_ret` / `run` batches |
 | `api.int64`, `api.toI64(value)` | 64-bit integer class (`add32`, `sub32`, `toString`) and conversion helper |
 | `api.fw`, `api.version`, `api.args` | Firmware version string, loader version string, and payload CLI arguments (`string[]`) |
 | `api.libKernelBase`, `api.libSceNKWebKitBase`, `api.libSceLibcInternalBase` | `int64` base addresses of mapped system libraries |
-| `api.gadgets`, `api.syscalls`, `api.krwLayout` | Loaded firmware offsets and tables |
+| `api.gadgets`, `api.syscalls`, `api.krwLayout` | Compatibility views over Wobkot's firmware implementation |
 | `api.log(message, type)` | Screen/client logging (`type`: `"info"`, `"warn"`, `"error"`, `"success"`, `"log"`); returns a promise |
 | `api.sendBlob(bytes)` | Return binary data (`Uint8Array`) to client (`send.py --save-blobs`; remote mode only) |
 | `api.module(path)` | Import a helper from the host via HTTP or an embedded module registry; returns a promise |
@@ -32,13 +35,13 @@ Lua payloads with a `--!lua` first line use the Lua runtime instead. See the
 | `api.config` | Binary paths from `src/binaries.js` with `window.LOADER_CONFIG` overrides |
 | `api.prefetchKexp(options)` | Fetch and cache kernel payload (`kexp.bin`) and ELF loader (`elfldr.elf`) |
 | `api.launchKexp(options)` | Run post-exploit pipeline with an active kernel R/W handle |
-| `api.enableSyncGates()` | Enable ROP worker synchronisation gates (park-wait, hook restore, poison check) before each chain call. Off by default; Relapse opts in for stability |
-| `api.disableSyncGates()` | Disable synchronisation gates (restore the fast fire-and-forget path) |
+| `api.enableSyncGates()`, `api.disableSyncGates()` | Legacy compatibility no-ops; Wobkot does not use the former hijacked-worker gates |
 | `api.isFailure(rv)`, `api.isUnexpected(rv)`, `api.describe(rv)` | Syscall return value helpers and errno formatting |
 
 ## Execution Model & Constraints
 
-* **Execution**: Payloads execute in the page realm. Use `api.chain` for ROP calls; syscall batches execute on `await api.chain.run()`.
+* **Execution**: Payloads execute in the page realm. Wobkot performs native calls through its main-thread ROP pivot. Recorded syscall batches currently replay sequentially on `await api.chain.run()`.
+* **Remote transport**: The loader listens on TCP port 9027. Its listener remains blocking, but the receive loop gates `accept(2)` with zero-timeout `poll(2)` calls so the page thread remains responsive without `fcntl`, `FIONBIO`, or socket-type nonblocking flags.
 * **Deadlines**: Default payload timeout is 10 minutes (`600000` ms). Persistent services (e.g. servers) should call `api.setPayloadTimeout(0)`.
 * **Memory**: `api.p.malloc` limit is 1 MiB per payload. Reading unowned addresses inside execute-only system libraries (`.xotext`) will throw an error unless `api.allowXotextReads = true` is set.
 * **Kernel pipeline**: Call `api.prefetchKexp()` before triggering a kernel exploit, then `api.launchKexp({ krw })`. `stopAfter` accepts `'map'`, `'pipes'`, or `'spawn'` (default). Bundles [`ps5-kexp`](https://github.com/itsPLK/ps5-kexp) (kernel payload shellcode) and [`elfldr`](https://github.com/ps5-payload-dev/elfldr) (ELF loader daemon listening on port 9021); see [shared/README.md](../shared/README.md).

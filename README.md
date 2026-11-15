@@ -2,15 +2,26 @@
   <img src="./installer/assets/icon.svg" width="128" />
 </p>
 <h1 align="center">PS5 WebKit Remote Loader</h1>
-<p align="center">JavaScript payload loader for the PS5.<br>Supports firmwares <b>7.00&ndash;13.60</b>.</p>
+<p align="center">Wobkot-based JavaScript payload loader for the PS5.<br>Supports firmwares <b>6.00&ndash;13.60</b>.</p>
 
-Inspired by [remote_lua_loader](https://github.com/n0llptr/remote_lua_loader) and [Y2JB](https://github.com/Gezine/Y2JB), the loader runs in WebKit userland and accepts payloads over TCP on port **9027**. Kernel exploits are optional payloads, not a prerequisite for the loader.
+The loader uses [ufm42/wobkot](https://github.com/ufm42/wobkot) for its WebKit primitive, firmware layouts, native-call ROP, and Relapse implementation. It accepts JavaScript payloads over TCP on port **9027**. Relapse remains an optional payload rather than a prerequisite for the userland loader.
+
+## Firmware support
+
+The active integration accepts PS5 firmware **6.00 through 13.60** for both the
+Wobkot userland and Wobkot Relapse paths. Wobkot selects the nearest applicable
+firmware implementation from its vendored tables; this range does not mean that
+every intermediate firmware has been tested by this project. Userland loading,
+the port 9027 transport, and Relapse have been hardware-verified here on **7.61**.
+
+The remote listener uses a normal blocking socket with zero-timeout `poll(2)`
+readiness checks. This avoids descriptor-flag operations rejected by the 7.61
+WebProcess while ensuring `accept(2)` is called only when it cannot block.
 
 ## Setup
 
 Run the PC host from a checkout or use the bundled Python script / Windows
-executable from a release. A source checkout builds the Lua runtime bundle on
-first use and requires Node.js 18+ and npm; release builds include the bundle.
+executable from a release. Release builds include the complete vendored Wobkot runtime.
 
 ```sh
 sudo python3 host.py
@@ -33,12 +44,6 @@ python3 tools/send.py <PS5_IP> 9027 --status
 ```
 
 See [payloads/README.md](payloads/README.md) for bundled payloads and arguments.
-
-## LuaK1t
-
-The loader includes LuaK1t, a JavaScript-hosted Lua environment. See the
-[Lua compatibility guide](docs/LUA_COMPATIBILITY.md) for runtime selection,
-core bindings, and the optional `remote_lua_loader` profile.
 
 ## Payload API
 
@@ -82,7 +87,7 @@ python3 tools/build_standalone.py payloads/hello_world.js \
 python3 tools/build_host.py --page dist/custom.html --name "PS5 CUSTOM HOST"
 ```
 
-The host builder supports multiple pages (`--page index.html=relapse.html --page poops.html=poops.html`). Multi-page hosts automatically route firmware incompatible with Relapse (9.05) or `?exploit=poops` to `poops.html`.
+The host builder can package explicitly named pages, but the normal host always runs the single Wobkot runtime. Poops routing has been removed.
 
 ### Custom appearance and startup scripts
 
@@ -106,17 +111,15 @@ make host            # Build standalone host script
 Run test suites (Node.js and Python 3):
 
 ```sh
-make test            # Runs selftest, standalone runner, asset & customization tests
+make test            # Runs Wobkot integration, payload, standalone, and packaging tests
 make test-native     # Runs shared native installer tests with stubbed PS5 services
 ```
 
 ## Credits and licenses
 
-* **[Y2JB](https://github.com/Gezine/Y2JB)** and **[remote_lua_loader](https://github.com/n0llptr/remote_lua_loader)** — used for reference.
-* Relapse is adapted from [ntfargo](https://github.com/ntfargo) and [Sonic_Iso](https://github.com/soniciso1)'s [Relapse-Exploit](https://github.com/ntfargo/Relapse-Exploit).
-* Poops is adapted from [Jordy](https://github.com/jordyidk)'s [slopkit](https://github.com/jordyidk/slopkit).
+* **[ufm42/wobkot](https://github.com/ufm42/wobkot)** — WebKit userland, ROP, firmware implementation, and Relapse base (vendored under its MIT license).
 * **[john-tornblom](https://github.com/john-tornblom)** — [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk/) and [elfldr](https://github.com/ps5-payload-dev/elfldr)
-* **[ufm42](https://github.com/ufm42)** — [kexp](https://github.com/ufm42/kexp)
+* **[itsPLK](https://github.com/itsPLK)** — [ps5-kexp](https://github.com/itsPLK/ps5-kexp)
 * **[madler](https://github.com/madler)** — [puff](https://github.com/madler/zlib/tree/master/contrib/puff)
 
 The loader, PC host, and client tools are licensed under [MIT](LICENSE).

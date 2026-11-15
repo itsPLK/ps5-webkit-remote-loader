@@ -1,37 +1,32 @@
 PYTHON ?= python3
 
-.PHONY: all version lua-runtime host installer test test-native clean
+.PHONY: all version host installer test test-native clean
 
 all: host
 
 version:
 	$(PYTHON) tools/gen_version.py
 
-lua-runtime:
-	$(PYTHON) tools/lua_runtime/build_runtime.py
-
-host: version lua-runtime
+host: version
 	$(PYTHON) tools/build_host.py
 
 installer:
 	@echo "Building installer ELF via Docker SDK..."
 	./build_release.sh
 
-test: lua-runtime
-	node tools/memory_bulk_test.mjs
-	node tools/memory_bench_test.mjs
-	node tools/syscall_bench_test.mjs
-	node tools/worker_profile_test.mjs
-	node tools/worker_timeout_test.mjs
-	node tools/worker_park_test.mjs
-	node tools/selftest.js
+test:
+	node tools/wobkot_integration_test.mjs
+	node tools/wobkot_adapter_test.mjs
+	node tools/net_wobkot_test.mjs
 	node tools/standalone_test.js
-	node tools/lua_runtime/benchmark_report_test.js
-	node tools/lua_runtime/format_test.js
-	node tools/lua_runtime/test.js
-	node tools/lua_runtime/routing_test.mjs
-	node tools/lua_runtime/compat_test.mjs
-	node tools/lua_runtime/service_test.mjs
+	node tools/df_test.js
+	node tools/ps_test.js
+	node tools/netstat_test.js
+	node tools/readfile_test.js
+	node tools/notify_test.js
+	node tools/sysinfo_test.js
+	node tools/klog_test.js
+	$(PYTHON) tools/build_standalone.py payloads/hello_world.js --check
 	$(PYTHON) tools/build_assets_test.py
 	$(PYTHON) tools/build_customization_test.py
 

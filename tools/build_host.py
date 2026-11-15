@@ -52,6 +52,13 @@ def should_include(rel_path):
         return False
     if rel_path.startswith("installer"):
         return False
+    if rel_path in (
+        "src/firmware.js", "src/main.js", "src/rop.js", "src/webkit.js",
+        "src/utils/rop_slave.js", "src/lua-vm.js", "payloads/poops.js",
+    ):
+        return False
+    if rel_path.startswith("payloads/lua/") or rel_path.startswith("tools/lua_runtime/"):
+        return False
     if rel_path.endswith((".elf", ".exe")):
         return False
     if rel_path in ("build_release.sh", "Makefile"):
@@ -61,12 +68,6 @@ def should_include(rel_path):
 
 def build_zip(page=None, version=None, build_time="dev", source_dir=None):
     root = repo_root()
-    if page is None and source_dir is None:
-        subprocess.run(
-            [sys.executable, os.path.join(root, "tools", "lua_runtime", "build_runtime.py")],
-            cwd=root,
-            check=True,
-        )
     archive = io.BytesIO()
     file_map = {}
 
@@ -126,11 +127,11 @@ def build_zip(page=None, version=None, build_time="dev", source_dir=None):
     # Target items to bundle
     include_paths = [
         "index.html",
-        "offsets",
         "shared",
         "src",
         "tools/send.py",
         "payloads",
+        "vendor/wobkot",
     ]
 
     for item in include_paths:

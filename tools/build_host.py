@@ -53,11 +53,10 @@ def should_include(rel_path):
     if rel_path.startswith("installer"):
         return False
     if rel_path in (
-        "src/firmware.js", "src/main.js", "src/rop.js", "src/webkit.js",
-        "src/utils/rop_slave.js", "src/lua-vm.js", "payloads/poops.js",
+        "src/firmware.js", "src/rop.js", "src/webkit.js", "src/lua-vm.js",
     ):
         return False
-    if rel_path.startswith("payloads/lua/") or rel_path.startswith("tools/lua_runtime/"):
+    if rel_path.startswith("tools/lua_runtime/"):
         return False
     if rel_path.endswith((".elf", ".exe")):
         return False
@@ -129,6 +128,7 @@ def build_zip(page=None, version=None, build_time="dev", source_dir=None):
         "index.html",
         "shared",
         "src",
+        "offsets",
         "tools/send.py",
         "payloads",
         "vendor/wobkot",

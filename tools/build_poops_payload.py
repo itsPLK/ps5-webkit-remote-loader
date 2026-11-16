@@ -272,6 +272,26 @@ def build_poops_region(ref):
     region = region.replace(upstream_dry, ported_dry, 1)
     expect(region, "  // >>> poops port E5 end", "poops.js E5 markers")
 
+    # E6 -- trigger=none is an intentional negative control. It cannot reach
+    # stage 4, so stage 5 must be skipped rather than turning a clean control
+    # run into a misleading failure.
+    stage5_gate = (
+        '      if (mode !== "1" && mode !== "dry") return NA("stage 5 runs a payload, opt-in only");\n'
+        '      if (!E.S.jailbroken) return FAIL("stage 5 needs stage 4\'s jailbreak (getuid()==0); " +'
+    )
+    ported_gate = (
+        '      if (mode !== "1" && mode !== "dry") return NA("stage 5 runs a payload, opt-in only");\n'
+        '      // >>> poops port E6: negative control skips payload launch\n'
+        '      const unarmed = needTrigger("launch the stage 5 payload");\n'
+        '      if (unarmed) return unarmed;\n'
+        '      // >>> poops port E6 end\n'
+        '      if (!E.S.jailbroken) return FAIL("stage 5 needs stage 4\'s jailbreak (getuid()==0); " +'
+    )
+    if stage5_gate not in region:
+        raise Fail("poops.js: ps10_stage5 trigger gate was not found")
+    region = region.replace(stage5_gate, ported_gate, 1)
+    expect(region, "  // >>> poops port E6 end", "poops.js E6 markers")
+
     for bad in ("fetch(", "XMLHttpRequest", "new Worker", "import(", "require("):
         if bad in outside:
             raise Fail(f"poops.js region contains {bad!r}; the port must not fetch")

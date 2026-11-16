@@ -58,9 +58,27 @@ class EmbeddedAssetsTest(unittest.TestCase):
 
     def test_lua_payloads_are_rejected(self):
         with self.assertRaises(SystemExit):
-            standalone.Payload('payloads/lua/compat_smoke.lua', [])
+            standalone.Payload('payload.lua', [])
         p_js = standalone.Payload('payloads/hello_world.js', [])
         self.assertEqual(p_js.args, [])
+
+    def test_poops_compatibility_assets_are_packaged(self):
+        for path in ('payloads/poops.js', 'src/main.js', 'src/utils/rop_slave.js',
+                     'offsets/7.61.js'):
+            self.assertTrue(host.should_include(path), path)
+
+        _, files = host.build_zip()
+        for path in ('payloads/poops.js', 'src/main.js', 'src/utils/rop_slave.js',
+                     'offsets/7.61.js'):
+            self.assertIn(path, files)
+
+        payloads = standalone.load_payloads(['payloads/poops.js'])
+        html, meta = standalone.build_html(payloads, include_kexp=False)
+        self.assertEqual(standalone.check_output(html, payloads, meta), [])
+        scripts = standalone.extract_json_assignment(html, '__wobkotScripts')
+        self.assertIn('src/main.js', scripts)
+        self.assertIn('src/utils/rop_slave.js', scripts)
+        self.assertIn('window.offsetsInline', html)
 
     def test_single_page_host(self):
         with tempfile.TemporaryDirectory() as directory:

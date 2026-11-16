@@ -19,6 +19,7 @@ See [docs/API.md](../docs/API.md) for the payload authoring API reference.
 | [readfile.js](readfile.js) | Read files | Paths, `text`, `hex`, `both`, `width=N`, `offset=N`, `limit=N` |
 | [klog.js](klog.js) | Read `/dev/klog` | `follow`, `timeout=N`, `sec=N`, `grep=TEXT`, `filter=TEXT`, `raw` |
 | [relapse.js](relapse.js) | Invoke Wobkot's Relapse implementation | None |
+| [poops.js](poops.js) | Run Poops through its isolated Wobkot compatibility backend | `trigger=TYPE`, `attempts=N`, `sockets=N`, `payload=1`, `verbose`, `latch-clear` |
 
 ## FTP
 
@@ -37,7 +38,7 @@ ends the payload.
 ## Kernel payloads
 
 * **Relapse** (`payloads/relapse.js`) invokes the vendored Wobkot implementation on the active Wobkot userland.
-* **Poops is no longer supported** by the active runtime. Its old source remains temporarily as porting reference.
+* **Poops** (`payloads/poops.js`) reuses Wobkot's ARW and detected library bases, then lazily starts its private worker-chain compatibility backend. It does not alter the normal payload API or Wobkot's vendored userland.
 
 Relapse attempts privilege escalation and launches the bundled ELF loader
 ([elfldr](https://github.com/ps5-payload-dev/elfldr)) on port 9021 via kernel shellcode

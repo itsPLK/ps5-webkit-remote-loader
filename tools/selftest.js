@@ -1749,8 +1749,12 @@ if (!havePoopsUpstream) {
   check("E5: the dry-run summary block is present and was replaced", afterE5 !== afterE4,
     "no `poops port E5` block found; the dry run claims work it never did");
 
+  const afterE6 = afterE5.replace(portBlock("E6"), "");
+  check("E6: an unarmed negative control skips stage 5", afterE6 !== afterE5,
+    "no `poops port E6` block found; trigger=none would be reported as a failure");
+
   check("payloads/poops.js is upstream poops.js, unmodified",
-    afterE5 === upstreamPoops, firstDifference(afterE5, upstreamPoops));
+    afterE6 === upstreamPoops, firstDifference(afterE6, upstreamPoops));
 
   // E5 asserts the ABSENCE of an edit -- thread_rop is reached, not changed --
   // so there is nothing to reverse and it is checked as a fact instead.

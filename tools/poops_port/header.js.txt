@@ -2,7 +2,7 @@
 // https://github.com/jordyidk/slopkit
 // Uses the loader ARW and gated worker chain.
 // Port edits: E1 remove exports; E2 remove fetchInto; E3 delegate stage5Body;
-// E4 inject launchKexp; E5 update the dry-run summary.
+// E4 inject launchKexp; E5 update the dry-run summary; E6 skip stage 5 when unarmed.
 // PORT BOUNDARY and E markers are used by upstream fidelity checks.
 
 const int64 = globalThis.int64;

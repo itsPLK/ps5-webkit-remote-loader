@@ -248,13 +248,13 @@ def load_binary_config():
 
 class Payload(object):
     def __init__(self, path, args):
+        if path.lower().endswith(".lua"):
+            raise SystemExit("Lua payloads are not supported by the Wobkot runtime: %s" % path)
         self.path = path
         self.args = list(args or [])
         self.label = os.path.basename(path)
         with open(repo_path(path), "r", encoding="utf-8") as f:
             self.source = f.read()
-        if path.lower().endswith(".lua"):
-            raise SystemExit("Lua payloads are not supported by the Wobkot runtime: %s" % path)
 
     @property
     def byte_length(self):
@@ -374,6 +374,16 @@ INLINE_ENV_JS = r"""
       "this page has no module for " + specifier + " (looked for " + keys.join(", ") +
       "). It should have been built into the file; rebuild it with " +
       "tools/build_standalone.py."));
+  };
+
+  window.offsetsInline = function (firmware) {
+    var source = (window.__offsets || {})[String(firmware)];
+    if (typeof source !== "string")
+      return Promise.reject(new Error("this page has no offsets for firmware " + firmware));
+    var script = document.createElement("script");
+    script.text = source;
+    document.head.appendChild(script);
+    return Promise.resolve();
   };
 })();
 """
@@ -583,6 +593,8 @@ def build_html(payloads, title=None, include_kexp=True, embedded_files=None,
     add("  window.__wobkotScripts = %s;" % js_string({
         "vendor/wobkot/src/kernel.js": read_text("vendor/wobkot/src/kernel.js"),
         "vendor/wobkot/src/ps5/relapse.js": read_text("vendor/wobkot/src/ps5/relapse.js"),
+        "src/main.js": read_text("src/main.js"),
+        "src/utils/rop_slave.js": read_text("src/utils/rop_slave.js"),
     }))
     if binaries:
         add("  window.EMBEDDED_BINARIES = %s;" % js_string(binaries))
@@ -777,12 +789,18 @@ def check_output(html, payloads, meta):
 
     for needle, why in (
         ("window.__wobkotScripts", "no deferred Wobkot kernel scripts"),
+        ("window.offsetsInline", "no inline legacy-offset loader for Poops"),
         ("window.wobkot", "no Wobkot compatibility adapter"),
         ("window.__boot", "no module-graph boot"),
         ("runPayloadQueue", "the payload runner was not included"),
     ):
         if needle not in html:
             problems.append(why)
+
+    deferred = extract_json_assignment(html, "__wobkotScripts") or {}
+    for rel in ("src/main.js", "src/utils/rop_slave.js"):
+        if rel not in deferred:
+            problems.append("Poops compatibility asset %s is not embedded" % rel)
 
     inline_at = html.find("window.__wobkotScripts")
     main_at = html.find("/* === src/wobkot_bootstrap.js === */")

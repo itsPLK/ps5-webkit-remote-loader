@@ -18,6 +18,7 @@ test:
 	node tools/wobkot_integration_test.mjs
 	node tools/wobkot_adapter_test.mjs
 	node tools/net_wobkot_test.mjs
+	node tools/poops_wobkot_test.mjs
 	node tools/standalone_test.js
 	node tools/df_test.js
 	node tools/ps_test.js

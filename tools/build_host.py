@@ -131,7 +131,12 @@ def build_zip(page=None, version=None, build_time="dev", source_dir=None):
         "offsets",
         "tools/send.py",
         "payloads",
-        "vendor/wobkot",
+        "vendor/wobkot/LICENSE.txt",
+        "vendor/wobkot/src/misc.js",
+        "vendor/wobkot/src/userland.js",
+        "vendor/wobkot/src/kernel.js",
+        "vendor/wobkot/src/ps5/impl.js",
+        "vendor/wobkot/src/ps5/relapse.js",
     ]
 
     for item in include_paths:

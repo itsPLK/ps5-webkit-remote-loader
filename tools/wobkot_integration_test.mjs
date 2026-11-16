@@ -14,7 +14,12 @@ for (const path of [
   "vendor/wobkot/src/ps5/impl.js",
   "vendor/wobkot/src/ps5/relapse.js",
   "vendor/wobkot/src/kernel.js",
-]) check(existsSync(new URL(path, root)), `vendored ${path}`);
+]) check(existsSync(new URL(path, root)), `submodule provides ${path}`);
+
+const gitmodules = read(".gitmodules");
+check(gitmodules.includes('path = vendor/wobkot') &&
+  gitmodules.includes('url = https://github.com/ufm42/wobkot.git'),
+"Wobkot is tracked as the upstream submodule");
 
 const index = read("index.html");
 const order = [
@@ -38,5 +43,10 @@ check(!relapse.includes("class KernelExploit"), "local Relapse port was removed"
 
 const loader = read("src/loader.js");
 check(!loader.includes('import("./lua-vm.js")'), "loader has no Lua runtime dependency");
+
+const hostBuilder = read("tools/build_host.py");
+check(!hostBuilder.includes('"vendor/wobkot",') &&
+  hostBuilder.includes('"vendor/wobkot/src/ps5/relapse.js"'),
+"host packages only the Wobkot runtime files used by this integration");
 
 console.log("Wobkot integration checks passed");

@@ -20,8 +20,15 @@ WebProcess while ensuring `accept(2)` is called only when it cannot block.
 
 ## Setup
 
-Run the PC host from a checkout or use the bundled Python script / Windows
-executable from a release. Release builds include the complete vendored Wobkot runtime.
+Run the PC host from a recursive checkout or use the bundled Python script / Windows
+executable from a release. Wobkot is pinned as a submodule; release builds still
+include its complete runtime.
+
+```sh
+git clone --recurse-submodules https://github.com/itsPLK/ps5-webkit-remote-loader.git
+# Existing checkout:
+git submodule update --init --recursive
+```
 
 ```sh
 sudo python3 host.py

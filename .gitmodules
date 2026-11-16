@@ -1,0 +1,3 @@
+[submodule "vendor/wobkot"]
+	path = vendor/wobkot
+	url = https://github.com/ufm42/wobkot.git

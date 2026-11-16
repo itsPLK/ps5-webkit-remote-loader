@@ -1591,6 +1591,9 @@ if (!UPSTREAM_RELAPSE) {
 
   check("syscalls.js globals are available for the launchKexp run",
     vm.runInThisContext("typeof SYS_MMAP === 'number'"));
+  check("kexp is independent of legacy SYS_* globals on the Wobkot page",
+    !/\bSYS_(?:MMAP|JITSHM_CREATE|JITSHM_ALIAS|PIPE2)\b/.test(kexpSrc),
+    "src/kexp.js still relies on a syscall global that Wobkot does not load");
 
   // Serves both binaries, and records the order they were asked for in. The
   // order is the point: prefetchBinaries() must fetch the ELF first because the

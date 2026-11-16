@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 
 const source = readFileSync(new URL("./poops_port/adapter.js.txt", import.meta.url), "utf8");
 const workerSource = readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
+const kexpSource = readFileSync(new URL("../src/kexp.js", import.meta.url), "utf8");
 const payloadSource = readFileSync(new URL("../payloads/poops.js", import.meta.url), "utf8");
 const start = source.indexOf("// Wobkot deliberately exposes");
 const end = source.indexOf("// Count ROP slots locally");
@@ -15,6 +16,8 @@ assert.doesNotMatch(workerSource.slice(prepareStart, prepareEnd), /\bSYS_[A-Z0-9
 assert.match(payloadSource,
   /poops port E6:[^\n]*\n\s*const unarmed = needTrigger\("launch the stage 5 payload"\);/,
   "the negative control skips stage 5 instead of reporting a false failure");
+assert.doesNotMatch(kexpSource, /\bSYS_(?:MMAP|JITSHM_CREATE|JITSHM_ALIAS|PIPE2)\b/,
+  "the kexp handoff does not depend on syscall globals absent from Wobkot");
 
 const block = source.slice(start, end);
 const compile = new Function("load_script", `
@@ -66,7 +69,6 @@ assert.equal(payloadApi.p, runtime.p);
 assert.equal(payloadApi.chain, runtime.chain);
 assert.equal(payloadApi.__poopsDirectChain, runtime.chain);
 assert.equal(payloadApi.log, api.log, "normal API methods remain inherited");
-
 const legacyApi = { chain: { stack_entry_point: "already-full" } };
 assert.equal(await compat.preparePoopsRuntime(legacyApi), null,
   "an existing full worker chain is left untouched");

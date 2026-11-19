@@ -140,7 +140,22 @@
       await load_script("src/kernel.js");
       kernelLoaded = true;
     }
-    await kernel_main();
+    // Wobkot emits its own "Jailbroken !!" system toast after patching the
+    // process. The loader already reports completion in its UI, so suppress
+    // that one redundant notification without modifying the upstream
+    // submodule or swallowing any other notification Wobkot may add.
+    const upstreamNotify = globalThis.notify;
+    if (typeof upstreamNotify === "function") {
+      globalThis.notify = (message, ...args) => {
+        if (String(message) === "Jailbroken !!") return;
+        return upstreamNotify(message, ...args);
+      };
+    }
+    try {
+      await kernel_main();
+    } finally {
+      if (typeof upstreamNotify === "function") globalThis.notify = upstreamNotify;
+    }
   }
 
   window.wobkot = { initialize, runRelapse, runtime: null };

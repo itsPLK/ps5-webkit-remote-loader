@@ -36,7 +36,15 @@ class NativeFunction {
   invoke(...args) { const id = typeof this.target === "number" ? this.target : this.target.lo; return new BInt(0, id + (args[0] ? args[0].lo : 0)); }
 }
 async function userland_main() {}
-async function load_script() { globalThis.kernel_main = async function () { globalThis.kernelRan = true; }; }
+globalThis.notifications = [];
+function notify(message) { globalThis.notifications.push(message); }
+async function load_script() {
+  globalThis.kernel_main = async function () {
+    globalThis.kernelRan = true;
+    notify("Jailbroken !!");
+    notify("another upstream notification");
+  };
+}
 `;
 
 const context = { console, TextEncoder, ArrayBuffer, DataView, Uint8Array, Map, Promise };
@@ -53,5 +61,9 @@ const result = await runtime.chain.syscall(20, 7);
 if (result.low !== 27) throw new Error("native syscall adapter failed");
 await context.wobkot.runRelapse();
 if (!context.kernelRan) throw new Error("Relapse boundary did not invoke kernel_main");
+if (context.notifications.join("|") !== "another upstream notification")
+  throw new Error("the adapter did not suppress only Wobkot's jailbreak notification");
+if (context.notify.name !== "notify")
+  throw new Error("the upstream notification function was not restored");
 
 console.log("Wobkot adapter behavior passed");

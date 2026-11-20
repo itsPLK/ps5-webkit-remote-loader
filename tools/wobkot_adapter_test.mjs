@@ -17,8 +17,8 @@ class I64 {
 globalThis.int64 = I64;
 globalThis.window = globalThis;
 globalThis.version = {
-  console: 5, major: 13, minor: 0x60,
-  init() {}, toString() { return "13.60"; }
+  console: 5, major: 5, minor: 0x50,
+  init() {}, toString() { return "5.50"; }
 };
 let webkit_base = new BInt(0x8, 0x1000);
 let libc_base = new BInt(0x8, 0x2000);
@@ -52,7 +52,7 @@ vm.createContext(context);
 vm.runInContext(prelude + "\n" + adapter, context, { filename: "wobkot-adapter-test.js" });
 
 const runtime = await context.wobkot.initialize();
-if (context.fw_str !== "13.60") throw new Error("firmware was not published");
+if (context.fw_str !== "5.50") throw new Error("firmware was not published");
 if (runtime.p.libKernelBase.low !== 0x3000) throw new Error("library base translation failed");
 const pointer = runtime.p.malloc(16);
 runtime.p.write4(pointer, 0xfeedc0de);

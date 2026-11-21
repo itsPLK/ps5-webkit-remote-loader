@@ -66,6 +66,13 @@ def get_embedded_zip():
 
 DEFAULT_TARGET = "manuals.playstation.net"
 DEFAULT_TTL = 300
+GITHUB_SUFFIXES = (
+    "github.com",
+    "github.io",
+    "githubusercontent.com",
+    "githubassets.com",
+    "githubapp.com",
+)
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -185,6 +192,19 @@ def build_response(qid, question_bytes, ip=None):
     return header + question_bytes + answer
 
 
+def build_nodata(qid, question_bytes):
+    """Build a NOERROR/NODATA response: question echoed, no answers."""
+    header = struct.pack(">HHHHHH", qid, 0x8180, 1, 0, 0, 0)
+    return header + question_bytes
+
+
+def name_matches(name, suffixes):
+    """Case-insensitive match: equal to a suffix or '<name>.<suffix>'."""
+    name = name.lower()
+    return any(name == suffix.lower() or name.endswith("." + suffix.lower())
+               for suffix in suffixes)
+
+
 class DNSHandler(socketserver.BaseRequestHandler):
     def handle(self):
         data, sock = self.request
@@ -200,6 +220,31 @@ class DNSHandler(socketserver.BaseRequestHandler):
             sock.sendto(
                 build_response(qid, question_bytes, server.ip), self.client_address
             )
+        elif name_matches(name, server.allow):
+            qtype, _qclass = struct.unpack(">HH", question_bytes[-4:])
+            if qtype == 1:
+                try:
+                    info = socket.getaddrinfo(
+                        name, 0, family=socket.AF_INET, type=socket.SOCK_STREAM
+                    )
+                    forward_ip = info[0][4][0]
+                except (OSError, IndexError):
+                    forward_ip = None
+                if forward_ip is None:
+                    if server.verbose:
+                        say(style(f"[DNS]  {name} -> RESOLVE FAILED (NXDOMAIN)", 33))
+                    sock.sendto(build_response(qid, question_bytes),
+                                self.client_address)
+                    return
+                if server.verbose:
+                    say(style(f"[DNS]  {name} -> {forward_ip}", 36))
+                sock.sendto(build_response(qid, question_bytes, forward_ip),
+                            self.client_address)
+            else:
+                if server.verbose:
+                    say(style(f"[DNS]  {name} -> NOERROR (no A record)", 36))
+                sock.sendto(build_nodata(qid, question_bytes),
+                            self.client_address)
         else:
             if server.verbose:
                 say(style(f"[DNS]  {name} -> BLOCKED (NXDOMAIN)", 33))
@@ -209,11 +254,12 @@ class DNSHandler(socketserver.BaseRequestHandler):
 class DNSServer(socketserver.ThreadingUDPServer):
     allow_reuse_address = True
 
-    def __init__(self, address, target, ip, status, verbose=False):
+    def __init__(self, address, target, ip, status, verbose=False, allow=None):
         self.target = target
         self.ip = ip
         self.status = status
         self.verbose = verbose
+        self.allow = allow or []
         super().__init__(address, DNSHandler)
 
 
@@ -571,6 +617,13 @@ def parse_args(argv=None):
                    help="IP to hand out for the spoofed domain (default: auto).")
     p.add_argument("--target", default=DEFAULT_TARGET,
                    help=f"Domain to spoof (default: {DEFAULT_TARGET}).")
+    p.add_argument("--allow", default="",
+                   help="Comma-separated DNS suffixes to resolve through the "
+                        "host resolver instead of NXDOMAIN "
+                        "(e.g. github.com,github.io).")
+    p.add_argument("--allow-github", action="store_true",
+                   help="Shorthand for --allow with "
+                        + ",".join(GITHUB_SUFFIXES) + ".")
     p.add_argument("--dns-port", type=int, default=53,
                    help="DNS UDP port (default: 53).")
     p.add_argument("--https-port", type=int, default=443,
@@ -620,6 +673,10 @@ def main(argv=None):
         return 1
 
     ip = args.ip or detect_local_ip()
+    allow = [s for s in (part.strip().lower()
+                         for part in args.allow.split(",")) if s]
+    if args.allow_github:
+        allow.extend(GITHUB_SUFFIXES)
 
     width = 52
     def row(t):
@@ -635,6 +692,9 @@ def main(argv=None):
 
     good(f"Spoofing {style(args.target, 1)} -> {style(ip, 1, 33)}")
     note("everything else gets NXDOMAIN (blocks PSN and update prompts)")
+    if allow:
+        good("DNS allowlist: " + ", ".join(allow))
+        note("A queries for those names use this PC's resolver; AAAA gets NODATA")
     good(f"Serving {REPO_ROOT if not EMBEDDED_ZIP_B64 else 'embedded in-memory bundle'}")
     if args.verbose:
         good("Verbose mode: per-request logging on.")
@@ -645,7 +705,7 @@ def main(argv=None):
     if not args.no_dns:
         try:
             dns = DNSServer(("0.0.0.0", args.dns_port), args.target, ip,
-                            status, args.verbose)
+                            status, args.verbose, allow)
         except OSError as exc:
             bad(f"Could not bind DNS port {args.dns_port}: {exc}")
             hint = bind_hint("DNS", args.dns_port, exc)

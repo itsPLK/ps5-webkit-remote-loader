@@ -2,13 +2,13 @@
   <img src="./installer/assets/icon.svg" width="128" />
 </p>
 <h1 align="center">PS5 WebKit Remote Loader</h1>
-<p align="center">JavaScript payload loader for the PS5.<br>Supports firmwares <b>6.00&ndash;13.60</b>.</p>
+<p align="center">JavaScript payload loader for the PS5.<br>Supports firmwares <b>3.00&ndash;13.60</b>.</p>
 
 The loader uses [ufm42/wobkot](https://github.com/ufm42/wobkot) for its WebKit primitive, firmware layouts, native-call ROP, and Relapse implementation. It accepts JavaScript payloads over TCP on port **9027**. Relapse remains an optional payload rather than a prerequisite for the userland loader.
 
 ## Firmware support
 
-The active integration accepts PS5 firmware **6.00 through 13.60** for both the
+The active integration accepts PS5 firmware **3.00 through 13.60** for both the
 Wobkot userland and Wobkot Relapse paths. Wobkot selects the nearest applicable
 firmware implementation from its vendored tables; this range does not mean that
 every intermediate firmware has been tested by this project. Userland loading,

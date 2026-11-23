@@ -42,6 +42,42 @@ For a homescreen installation, send `webkit-remote-loader-installer_v*.elf` thro
 an existing ELF loader. It serves an AppCache installer on port 18180 and installs
 the homescreen shortcut (`WKRL00001`). See [installer/README.md](installer/README.md).
 
+## DNS allowlist
+
+The DNS server answers only the spoofed `--target` name with `--ip`; every other
+name gets NXDOMAIN. That is what blocks PSN and update prompts, but it also
+blocks an on-console Payload Manager that fetches payloads from GitHub while the
+PS5's DNS still points at this host.
+
+`--allow` opts specific DNS suffixes into resolution through the host PC's own
+resolver:
+
+```sh
+sudo python3 host.py --allow github.com,github.io
+sudo python3 host.py --allow-github
+# --allow-github is github.com,github.io,githubusercontent.com,
+# githubassets.com,githubapp.com
+```
+
+* The spoofed `--target` name keeps its existing behaviour.
+* Allowlisted `A` queries return the first IPv4 address the host resolver
+  returns. `AAAA` and every other query type return NOERROR with no answers
+  (NODATA), so a dual-stack client falls back to IPv4 instead of waiting on an
+  IPv6 answer that will never arrive.
+* Every other name still returns NXDOMAIN.
+* With no `--allow` or `--allow-github`, behaviour is unchanged.
+
+Matching is case-insensitive and suffix-boundary aware: `github.com` matches
+`github.com` and `api.github.com`, but not `notgithub.com` or
+`github.com.evil.example`.
+
+**Security trade-off:** an allowlisted suffix opens real internet resolution for
+that domain and all of its subdomains, so anything hosted there becomes
+reachable from the console. Keep the list as small as the task requires and do
+not add PSN, update, or telemetry domains. The forwarded answer is whatever the
+host resolver returns; there is no DNSSEC validation, pinning, or per-name IP
+filtering.
+
 ## Sending payloads
 
 ```sh
